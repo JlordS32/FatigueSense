@@ -5,3 +5,5 @@ fatigue_sense.conf
 videos
 data
 PERSONAL.ipynb
+*.pt
+runs

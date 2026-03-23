@@ -73,7 +73,7 @@ def extract_frames(
 
 
 if __name__ == "__main__":
-    from clearml import Task, Dataset
+    from clearml import Dataset, Task
 
     task = Task.init(project_name="Main", task_name="Frame Extraction")
     args = {
@@ -99,3 +99,5 @@ if __name__ == "__main__":
     ds.add_files(args["output_dir"])
     ds.upload()
     ds.finalize()
+
+    task.close()
