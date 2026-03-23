@@ -1,0 +1,5 @@
+*.zip
+dataset_*
+fatigue_sense.conf
+.env
+videos
