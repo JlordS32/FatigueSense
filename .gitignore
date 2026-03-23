@@ -1,12 +1,19 @@
+# Files
 *.zip
-dataset_*
-fatigue_sense.conf
-.env
-videos
-data
-PERSONAL.ipynb
+*.mp4
+*.mp4
 *.pt
+
+# Folders
+dataset_*
+data
 runs
 __pycache__
-*.mp4
-*.mp4
+videos
+
+# Environment variables
+fatigue_sense.conf
+.env
+
+# Jupyter Notebook
+PERSONAL.ipynb
