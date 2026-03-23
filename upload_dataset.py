@@ -5,7 +5,7 @@ def upload_dataset(
     dataset_name,
     dataset_project,
     dataset_version,
-    data_path=None,
+    data_path=[],
     parent_dataset_id=None,
     dataset_tags=None,
 ):
@@ -18,8 +18,6 @@ def upload_dataset(
     )
 
     if data_path:
-        if isinstance(data_path, str):
-            data_path = [data_path]
         for path in data_path:
             ds.add_files(path)
 
