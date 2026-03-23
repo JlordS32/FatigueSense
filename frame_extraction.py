@@ -60,7 +60,7 @@ def extract_frames(
 
         for image in os.listdir(output_dir):
             formatted_target = f"{output_dir}/{image}"
-            
+
             if formatted_target in meta_data:
                 found_images.append(image)
             else:
@@ -73,7 +73,7 @@ def extract_frames(
 
 
 if __name__ == "__main__":
-    from clearml import Task
+    from clearml import Task, Dataset
 
     task = Task.init(project_name="Main", task_name="Frame Extraction")
     args = {
@@ -84,8 +84,18 @@ if __name__ == "__main__":
         "extension": ".png",
     }
 
+    ds = Dataset.create(
+        dataset_name="fatigue_raw_frames",
+        dataset_project="FatigueSense",
+        dataset_version="1.0",
+    )
+
     task.connect(args)
 
     # Start frame extraction
     extract_frames(**args)
-    
+
+    # Upload the extracted frames to the ClearML dataset
+    ds.add_files(args["output_dir"])
+    ds.upload()
+    ds.finalize()
