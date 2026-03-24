@@ -7,6 +7,8 @@
 # Folders
 dataset_*
 data
+dataset*
+split_data*
 runs
 __pycache__
 videos
