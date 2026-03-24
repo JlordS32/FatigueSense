@@ -2,6 +2,7 @@ import os
 
 import cv2
 from dotenv import load_dotenv
+from verify_files import verify_files
 
 load_dotenv()
 
@@ -51,25 +52,7 @@ def extract_frames(
     cap.release()
     print(f"Extracted {frame_count} frames from {video_path} to {output_dir}")
 
-    if metadata_path and os.path.exists(metadata_path):
-        found_images = []
-        missing_images = []
-
-        with open(metadata_path, "r") as f:
-            meta_data = {line.strip() for line in f}
-
-        for image in os.listdir(output_dir):
-            formatted_target = f"{output_dir}/{image}"
-
-            if formatted_target in meta_data:
-                found_images.append(image)
-            else:
-                missing_images.append(image)
-
-        print(f"Found images: {found_images}")
-        print(f"Missing images: {missing_images}")
-    else:
-        print("No metadata path provided, skipping metadata verification...")
+    verify_files(metadata_path, output_dir)
 
 
 if __name__ == "__main__":
@@ -77,27 +60,15 @@ if __name__ == "__main__":
 
     task = Task.init(project_name="Main", task_name="Frame Extraction")
     args = {
-        "video_path": "videos/2026-03-23 07-57-07.mp4",
-        "output_dir": "data/images",
+        "video_path": "videos/vid_001.mp4",
+        "output_dir": "dataset_1/images",
         "metadata_path": "dataset_1/train.txt",
         "frame_step": 13,
         "extension": ".png",
     }
 
-    ds = Dataset.create(
-        dataset_name="fatigue_raw_frames",
-        dataset_project="FatigueSense",
-        dataset_version="1.0",
-    )
-
     task.connect(args)
 
     # Start frame extraction
     extract_frames(**args)
-
-    # Upload the extracted frames to the ClearML dataset
-    ds.add_files(args["output_dir"])
-    ds.upload()
-    ds.finalize()
-
     task.close()

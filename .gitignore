@@ -10,6 +10,7 @@ data
 runs
 __pycache__
 videos
+raw_data
 
 # Environment variables
 fatigue_sense.conf
