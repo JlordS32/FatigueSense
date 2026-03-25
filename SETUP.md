@@ -158,6 +158,52 @@ cd FatigueSense
 git pull origin main
 ```
 
+### Download via Python (using `huggingface_hub`)
+
+You can also pull data using the Python SDK instead of Git.
+
+**Download the entire dataset:**
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="Jlords32/fatigue-sense",
+    repo_type="dataset",
+    local_dir="./dataset",
+)
+```
+
+**Download a single file:**
+
+```python
+from huggingface_hub import hf_hub_download
+
+hf_hub_download(
+    repo_id="Jlords32/fatigue-sense",
+    filename="data/train.csv",
+    repo_type="dataset",
+    local_dir="./dataset",
+)
+```
+
+**Download only specific file types:**
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="Jlords32/fatigue-sense",
+    repo_type="dataset",
+    local_dir="./dataset",
+    allow_patterns=["*.csv", "*.parquet"],
+)
+```
+
+> **Note:** You must be logged in first (see [Option 3: CLI Login](#option-3-cli-login-for-python-scripts) or [Option 4: Notebook Login](#option-4-notebook-login-for-jupyter-notebooks)). If omitting `local_dir`, files are cached to `~/.cache/huggingface/hub/`.
+
+> **Why not `load_dataset`?** The Hugging Face `datasets` library provides a `load_dataset()` function, but it expects structured formats like CSV, JSON, Parquet, or HF-native layouts (e.g., `ImageFolder`). Our dataset uses **YOLO object detection format** (images + `.txt` label files with bounding box coordinates), which `load_dataset` doesn't understand out of the box. Use `snapshot_download` to pull the raw files instead, and load them with Ultralytics/YOLO for training.
+
 ### Add and push your changes
 
 ```bash
@@ -227,6 +273,7 @@ git push origin main
 | Verify login | `hf auth whoami` |
 | Notebook login | `from huggingface_hub import notebook_login; notebook_login()` |
 | Pull latest | `git pull origin main` |
+| Download via Python | `snapshot_download(repo_id="Jlords32/fatigue-sense", repo_type="dataset", local_dir="./dataset")` |
 | Stage all changes | `git add .` |
 | Commit | `git commit -m "your message"` |
 | Push | `git push origin main` |
