@@ -1,56 +1,17 @@
 """
-Binary ROI Classifier — Bootstrap Stage
+Binary ROI Classifier — Model
+Shared MobileNetV3-Small backbone for all four ROI binary classifiers
+(Eyes, Mouth, Head, Torso). Outputs [p_positive, p_negative] via Softmax.
 
-Shared architecture for all four ROI binary classifiers (Eyes, Mouth, Head, Torso).
-Same MobileNetV3-Small backbone as MultiHeadCNN; single two-class head per instance.
-
-Outputs [p_positive, p_negative] via Softmax. ThresholdPredictor maps confidence
-scores to final three-way labels (positive / intermediate / negative) using
-configurable per-ROI thresholds.
-
-See docs/binary_classifier_bootstrap.md for the full pseudo-label pipeline.
+For threshold-based pseudo-labeling, see src/pipeline/threshold_predictor.py.
+See docs/binary_classifier_bootstrap.md for the full bootstrap pipeline.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
 import torch
 import torch.nn as nn
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
-
-ROIName = Literal["eyes", "mouth", "head", "torso"]
-
-# ---------------------------------------------------------------------------
-# Per-ROI threshold config
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ThresholdConfig:
-    low: float   # p_positive < low  → negative (confident)
-    high: float  # p_positive > high → positive (confident)
-    # Between low and high → intermediate (review queue or auto-labeled intermediate)
-
-
-THRESHOLD_DEFAULTS: dict[ROIName, ThresholdConfig] = {
-    "eyes":  ThresholdConfig(low=0.15, high=0.85),
-    "mouth": ThresholdConfig(low=0.15, high=0.85),
-    "head":  ThresholdConfig(low=0.20, high=0.80),
-    "torso": ThresholdConfig(low=0.20, high=0.80),
-}
-
-# Intermediate class labels emitted when p_positive is in the ambiguous zone
-INTERMEDIATE_CLASS: dict[ROIName, str | None] = {
-    "eyes":  "eyes_partially_closed",  # auto-labeled
-    "mouth": "mouth_slight_open",       # auto-labeled
-    "head":  None,                      # → review queue
-    "torso": None,                      # → review queue
-}
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
 
 
 class BinaryROIClassifier(nn.Module):
@@ -111,98 +72,11 @@ class BinaryROIClassifier(nn.Module):
         return torch.softmax(logits, dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Threshold predictor — maps softmax scores to final labels
-# ---------------------------------------------------------------------------
-
-PredictedLabel = Literal["positive", "negative", "intermediate"]
-
-
-class ThresholdPredictor:
-    """
-    Converts BinaryROIClassifier softmax output to three-way labels.
-
-    Positive  : p_positive > config.high  (confident, auto-label as positive class)
-    Negative  : p_positive < config.low   (confident, auto-label as negative class)
-    Intermediate: otherwise               (review queue, or intermediate class if defined)
-
-    Usage
-    -----
-    predictor = ThresholdPredictor("eyes")
-    probs = model(crop_batch)          # (B, 2)
-    labels, masks = predictor.predict(probs)
-    """
-
-    def __init__(self, roi: ROIName, config: ThresholdConfig | None = None) -> None:
-        self.roi = roi
-        self.config = config or THRESHOLD_DEFAULTS[roi]
-        self.intermediate_class = INTERMEDIATE_CLASS[roi]
-
-    def predict(
-        self, probs: torch.Tensor
-    ) -> tuple[list[PredictedLabel], dict[str, torch.Tensor]]:
-        """
-        Args:
-            probs: (B, 2) softmax output from BinaryROIClassifier
-
-        Returns:
-            labels : list[PredictedLabel] — one per sample
-            masks  : dict with boolean tensors:
-                       "confident"     — auto-label candidates
-                       "intermediate"  — review queue candidates
-        """
-        p_pos = probs[:, 0]
-
-        positive_mask = p_pos > self.config.high
-        negative_mask = p_pos < self.config.low
-        intermediate_mask = ~positive_mask & ~negative_mask
-        confident_mask = positive_mask | negative_mask
-
-        labels: list[PredictedLabel] = []
-        for i in range(probs.size(0)):
-            if positive_mask[i]:
-                labels.append("positive")
-            elif negative_mask[i]:
-                labels.append("negative")
-            else:
-                labels.append("intermediate")
-
-        return labels, {
-            "confident": confident_mask,
-            "intermediate": intermediate_mask,
-            "positive": positive_mask,
-            "negative": negative_mask,
-        }
-
-    def resolve_class_name(
-        self,
-        label: PredictedLabel,
-        positive_class: str,
-        negative_class: str,
-    ) -> str | None:
-        """
-        Map PredictedLabel to a final string class name.
-
-        Returns None for intermediate crops that have no defined auto-label
-        (i.e., head and torso) — these go to the manual review queue.
-        """
-        if label == "positive":
-            return positive_class
-        if label == "negative":
-            return negative_class
-        return self.intermediate_class  # None for head/torso → review queue
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
 def build_binary_classifier(
-    roi: ROIName,
     pretrained: bool = True,
     freeze_backbone: bool = True,
 ) -> BinaryROIClassifier:
-    """Construct a fresh BinaryROIClassifier for the given ROI."""
+    """Construct a fresh BinaryROIClassifier."""
     return BinaryROIClassifier(pretrained=pretrained, freeze_backbone=freeze_backbone)
 
 
@@ -211,19 +85,20 @@ def build_binary_classifier(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    for roi in ("eyes", "mouth", "head", "torso"):
-        model = build_binary_classifier(roi)
+    from src.pipeline.threshold_predictor import ThresholdPredictor
+
+    size_map = {
+        "eyes": (1, 3, 32, 64),
+        "mouth": (1, 3, 64, 64),
+        "head": (1, 3, 128, 128),
+        "torso": (1, 3, 128, 128),
+    }
+
+    for roi, shape in size_map.items():
+        model = build_binary_classifier()
         model.eval()
 
-        # Spatial sizes match roi_config.yaml: (W, H) → tensor (B, 3, H, W)
-        size_map = {
-            "eyes":  (1, 3, 32, 64),
-            "mouth": (1, 3, 64, 64),
-            "head":  (1, 3, 128, 128),
-            "torso": (1, 3, 128, 128),
-        }
-        dummy = torch.randn(*size_map[roi])
-
+        dummy = torch.randn(*shape)
         with torch.no_grad():
             probs = model(dummy)
 
