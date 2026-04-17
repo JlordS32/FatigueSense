@@ -22,25 +22,26 @@ PredictedLabel = Literal["positive", "negative", "intermediate"]
 # Per-ROI threshold config
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ThresholdConfig:
-    low: float   # p_positive < low  → negative (confident)
+    low: float  # p_positive < low  → negative (confident)
     high: float  # p_positive > high → positive (confident)
 
 
 THRESHOLD_DEFAULTS: dict[ROIName, ThresholdConfig] = {
-    "eyes":  ThresholdConfig(low=0.15, high=0.85),
+    "eyes": ThresholdConfig(low=0.15, high=0.85),
     "mouth": ThresholdConfig(low=0.15, high=0.85),
-    "head":  ThresholdConfig(low=0.20, high=0.80),
+    "head": ThresholdConfig(low=0.20, high=0.80),
     "torso": ThresholdConfig(low=0.20, high=0.80),
 }
 
 # Intermediate label emitted when p_positive is in the ambiguous zone.
 # None → crop goes to manual review queue (no auto-label).
 INTERMEDIATE_CLASS: dict[ROIName, str | None] = {
-    "eyes":  "eyes_partially_closed",
+    "eyes": "eyes_partially_closed",
     "mouth": "mouth_slight_open",
-    "head":  None,
+    "head": None,
     "torso": None,
 }
 
@@ -48,6 +49,7 @@ INTERMEDIATE_CLASS: dict[ROIName, str | None] = {
 # ---------------------------------------------------------------------------
 # Threshold predictor
 # ---------------------------------------------------------------------------
+
 
 class ThresholdPredictor:
     """
@@ -60,7 +62,7 @@ class ThresholdPredictor:
     Usage
     -----
     predictor = ThresholdPredictor("eyes")
-    probs = model(crop_batch)          # (B, 2)
+    probs = model(crop_batch) # (B, 2)
     labels, masks = predictor.predict(probs)
     """
 
@@ -70,11 +72,11 @@ class ThresholdPredictor:
         self.intermediate_class = INTERMEDIATE_CLASS[roi]
 
     def predict(
-        self, probs: torch.Tensor
+        self, logits: torch.Tensor
     ) -> tuple[list[PredictedLabel], dict[str, torch.Tensor]]:
         """
         Args:
-            probs: (B, 2) softmax output from BinaryROIClassifier
+            logits: (B, 2) raw logits from BinaryROIClassifier
 
         Returns:
             labels : list[PredictedLabel] — one per sample
@@ -84,11 +86,14 @@ class ThresholdPredictor:
                        "positive"      — positive-class candidates
                        "negative"      — negative-class candidates
         """
+        probs = torch.softmax(logits, dim=-1)
         p_pos = probs[:, 0]
 
         positive_mask = p_pos > self.config.high
         negative_mask = p_pos < self.config.low
-        intermediate_mask = ~positive_mask & ~negative_mask
+        intermediate_mask = (
+            ~positive_mask & ~negative_mask
+        )  # If both pos & neg = 0, 0 -> 1
         confident_mask = positive_mask | negative_mask
 
         labels: list[PredictedLabel] = []

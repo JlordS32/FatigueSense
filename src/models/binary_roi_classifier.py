@@ -1,7 +1,10 @@
 """
 Binary ROI Classifier — Model
 Shared MobileNetV3-Small backbone for all four ROI binary classifiers
-(Eyes, Mouth, Head, Torso). Outputs [p_positive, p_negative] via Softmax.
+(Eyes, Mouth, Head, Torso). Returns raw logits (B, 2).
+
+Use torch.softmax(logits, dim=-1) externally when needed (ThresholdPredictor does this).
+Training uses CrossEntropyLoss directly on logits.
 
 For threshold-based pseudo-labeling, see src/pipeline/threshold_predictor.py.
 See docs/binary_classifier_bootstrap.md for the full bootstrap pipeline.
@@ -15,17 +18,6 @@ from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 
 class BinaryROIClassifier(nn.Module):
-    """
-    Shared-architecture binary classifier for a single ROI stream.
-
-    Forward contract
-    ----------------
-    Input : (B, 3, H, W)  — ROI crop, any spatial size (AdaptiveAvgPool handles it)
-    Output: (B, 2)         — Softmax [p_positive, p_negative]
-
-    Instantiate once per ROI; weights are independent.
-    """
-
     BACKBONE_OUT_FEATURES = 576
 
     def __init__(
@@ -36,6 +28,7 @@ class BinaryROIClassifier(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Apply weights if pretrained
         weights = MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
         base = mobilenet_v3_small(weights=weights)
 
@@ -53,23 +46,21 @@ class BinaryROIClassifier(nn.Module):
             nn.Linear(128, 2),
         )
 
-    def freeze_backbone(self) -> None:
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-
-    def unfreeze_backbone(self, last_n_blocks: int = 2) -> None:
-        """Unfreeze the last N inverted residual blocks for Stage 2 fine-tuning."""
-        blocks = list(self.backbone.children())
-        for block in blocks[-last_n_blocks:]:
-            for param in block.parameters():
-                param.requires_grad = True
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
         x = self.pool(x)
         x = x.flatten(1)
-        logits = self.head(x)
-        return torch.softmax(logits, dim=-1)
+        return self.head(x)
+
+    def freeze_backbone(self, toggle: bool, last_n_blocks: int = 2):
+        if toggle:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+        else:
+            blocks = list(self.backbone.children())
+            for block in blocks[-last_n_blocks:]:
+                for param in block.parameters():
+                    param.requires_grad = True
 
 
 def build_binary_classifier(
@@ -100,13 +91,13 @@ if __name__ == "__main__":
 
         dummy = torch.randn(*shape)
         with torch.no_grad():
-            probs = model(dummy)
+            logits = model(dummy)
 
         predictor = ThresholdPredictor(roi)
-        labels, masks = predictor.predict(probs)
+        labels, masks = predictor.predict(logits)
 
         print(
-            f"{roi:6s} | probs={probs.squeeze().tolist()} "
+            f"{roi:6s} | logits={logits.squeeze().tolist()} "
             f"| label={labels[0]} "
             f"| intermediate_class={predictor.intermediate_class}"
         )

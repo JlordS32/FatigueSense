@@ -5,16 +5,17 @@
 *.pt
 
 # Folders
-dataset_*
-data
-dataset*
-split_data*
-runs
+/dataset_*
+/data
+/dataset*
+/split_data*
+/runs
 __pycache__
 videos
 raw_data
 vid_*
-.claude
+/.claude
+/training_data
 
 # Environment variables
 fatigue_sense.conf
