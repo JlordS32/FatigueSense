@@ -19,7 +19,6 @@ Rule:
 
 ### Eyes
 - `eyes_open`
-- `eyes_partially_closed`
 - `eyes_closed`
 - `eyes_occluded`
 
@@ -29,9 +28,10 @@ Optional add-on:
 
 ### Mouth
 - `mouth_closed`
-- `mouth_slight_open`
-- `mouth_wide_open`
+- `mouth_open`
 - `mouth_occluded`
+
+> Binary: `mouth_open` = yawning/wide open. `mouth_closed` = neutral/slight open collapsed into closed.
 
 ### Head
 - `head_neutral`
@@ -54,24 +54,20 @@ Optional add-on:
 If annotation speed is the priority, use this reduced set first:
 
 ### Eyes
-- `open`
-- `closed`
-- `occluded`
+- `eyes_open`
+- `eyes_closed`
 
 ### Mouth
-- `closed`
-- `wide_open`
-- `occluded`
+- `mouth_closed`
+- `mouth_open`
 
 ### Head
 - `neutral`
 - `down`
-- `occluded`
 
 ### Torso
 - `upright`
 - `heavy_slouch`
-- `occluded`
 
 ## Annotation Principles
 
@@ -83,9 +79,9 @@ If annotation speed is the priority, use this reduced set first:
 ## Temporal Events Derived After Labeling
 
 These should be computed from frame sequences, not manually labeled per frame:
-- Blink: brief `eyes_closed`
+- Blink: brief `eyes_closed` sequence in temporal window
 - Microsleep: sustained `eyes_closed`
-- Yawn: sustained `mouth_wide_open`
+- Yawn: sustained `mouth_open`
 - Nodding: repeated `head_down` transitions
 
 ## Suggested Label File Format
@@ -97,4 +93,4 @@ For region label files (for example `mouth_labels.txt`), use tab-separated colum
 
 Example:
 
-`vid_001_frame_000130\tmouth_wide_open`
+`vid_001_frame_000130\tmouth_open`

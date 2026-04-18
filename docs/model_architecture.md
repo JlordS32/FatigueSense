@@ -1,8 +1,10 @@
-# Phase B — Multi-Head CNN Architecture
+# Phase B — CNN Classification (Eyes + Mouth)
 
 ## Overview
 
-Phase B classifies behavioral states from the four ROI crops produced by Phase A (YOLO11). A **shared MobileNetV3-Small backbone** processes all crops through the same feature extractor; four independent classification heads then produce per-ROI softmax probability vectors consumed by Phase C (ACAMF + BiLSTM).
+Phase B classifies behavioral states from Eye and Mouth ROI crops produced by Phase A (YOLO11n-pose). **Head and Torso do not use CNN classification** — their behavioral features are derived from YOLO11n-pose keypoint geometry in Phase A.
+
+A **shared MobileNetV3-Small backbone** processes Eye and Mouth crops. Two independent binary classification heads produce per-ROI softmax vectors consumed by Phase C (ACAMF + BiGRU).
 
 ---
 
@@ -11,17 +13,15 @@ Phase B classifies behavioral states from the four ROI crops produced by Phase A
 | Criterion | Decision |
 |-----------|----------|
 | **Parameter count** | ~2.5M (full); heads-only fine-tune targets ~0.42M trainable params |
-| **Inference latency** | ~3–5ms/frame CPU (single crop); well within 31–35ms end-to-end budget |
-| **Pretrained weights** | ImageNet-1K available via `torchvision` — strong low-level feature priors for face/body crops |
-| **Depthwise separable convolutions** | Drastically reduces FLOPs vs. standard conv while preserving spatial feature quality |
-| **SE blocks (Squeeze-and-Excitation)** | Built-in channel recalibration — beneficial for fine-grained state discrimination (e.g., eyes partially closed vs. closed) |
-| **Hardswish activation** | Computationally cheaper than GELU/Swish; native to MobileNetV3 |
+| **Inference latency** | ~3–5ms/frame CPU (single crop); fits within 15fps budget |
+| **Pretrained weights** | ImageNet-1K via `torchvision` — strong low-level feature priors |
+| **Depthwise separable convolutions** | Low FLOPs vs. standard conv |
+| **SE blocks** | Built-in channel recalibration for fine-grained state discrimination |
+| **Hardswish activation** | Cheaper than GELU/Swish; native to MobileNetV3 |
 
-MobileNetV3-Small was chosen over the alternatives for the following reasons:
-
-- **vs. GhostNet:** Weaker pretrained ecosystem; fewer community-validated weights for transfer learning on face/body crops.
-- **vs. EfficientNet-Lite:** Higher latency and parameter count for marginal accuracy gains on small, constrained crops (32×64 eyes, 64×64 mouth).
-- **vs. ShuffleNetV2:** Lower accuracy ceiling on fine-grained per-frame classification; accuracy degrades significantly below 1M parameters.
+- **vs. GhostNet:** Weaker pretrained ecosystem for face/body crops.
+- **vs. EfficientNet-Lite:** Higher latency for marginal accuracy gain on small crops.
+- **vs. ShuffleNetV2:** Lower accuracy ceiling below 1M parameters.
 
 ---
 
@@ -39,163 +39,142 @@ flowchart TD
 
     B --> C["AdaptiveAvgPool2d(1)\nFlatten → (B, 576)"]
 
-    C --> E["Eyes Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→4\nSoftmax\n──────\nout: (B, 4)"]
-    C --> M["Mouth Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→4\nSoftmax\n──────\nout: (B, 4)"]
-    C --> H["Head Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→6\nSoftmax\n──────\nout: (B, 6)"]
-    C --> T["Torso Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→6\nSoftmax\n──────\nout: (B, 6)"]
+    C --> E["Eyes Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→2\nSoftmax\n──────\nout: (B, 2)"]
+    C --> M["Mouth Head\nLinear 576→128\nHardswish · Dropout\nLinear 128→2\nSoftmax\n──────\nout: (B, 2)"]
 
-    E --> OUT["Softmax Probability Vectors\n→ ACAMF + BiLSTM (Phase C)"]
+    E --> OUT["Softmax Probability Vectors\n→ ACAMF + BiGRU (Phase C)"]
     M --> OUT
-    H --> OUT
-    T --> OUT
 ```
 
 ### ROI Input Sizes
 
-| ROI   | Input (H × W) | Output Classes | Class Labels |
-|-------|---------------|----------------|--------------|
-| Eyes  | 32 × 64       | 4 | `eyes_open`, `eyes_partially_closed`, `eyes_closed`, `eyes_occluded` |
-| Mouth | 64 × 64       | 4 | `mouth_closed`, `mouth_slight_open`, `mouth_wide_open`, `mouth_occluded` |
-| Head  | 128 × 128     | 6 | `head_neutral`, `head_down`, `head_up`, `head_left`, `head_right`, `head_occluded` |
-| Torso | 128 × 128     | 6 | `torso_upright`, `torso_slight_slouch`, `torso_heavy_slouch`, `torso_lean_left`, `torso_lean_right`, `torso_occluded` |
+| ROI   | Input (H × W) | Classes | Labels |
+|-------|---------------|---------|--------|
+| Eyes  | 32 × 64       | 2 | `eyes_closed` (0), `eyes_open` (1) |
+| Mouth | 32 × 64       | 2 | `mouth_open` (0), `mouth_closed` (1) |
+
+### Pre-Processing (both ROIs)
+
+1. Grayscale → 3-channel (`Grayscale(num_output_channels=3)`)
+2. Resize to target H × W
+3. Normalize: ImageNet mean `(0.485, 0.456, 0.406)` / std `(0.229, 0.224, 0.225)`
+
+Grayscale applied at training and inference to match domain (eye/mouth crops are inherently low-color-information).
+
+---
+
+## Head + Torso — Keypoint Geometry Extractors
+
+Head and Torso behavioral features come from YOLO11n-pose keypoints, not CNNs.
+
+### HeadPoseExtractor
+- **Input:** 5 face keypoints (nose, left/right eye, left/right ear)
+- **Method:** Perspective-n-Point (PnP) solver against canonical 3D face model
+- **Output features:** pitch, yaw, roll (degrees)
+
+### TorsoPostureExtractor
+- **Input:** Shoulder + hip keypoints
+- **Output features:** slouch ratio (vertical shoulder-hip distance vs. baseline), lean angle (left/right shoulder height asymmetry)
 
 ---
 
 ## Design Decisions
 
+### Binary Classification
+Eyes and Mouth are strictly binary — no partially-closed or slight-open intermediate class. Fine-grained temporal states (blink duration, yawn frequency, PERCLOS) are captured by the BiGRU temporal model, not single-frame CNN classification.
+
 ### Shared Backbone
-
-All four ROI crops are processed by the same MobileNetV3-Small backbone. This was chosen over per-ROI specialized backbones because:
-
-- Keeps total parameter count well below the 0.42M trainable target when backbone is frozen.
-- ImageNet features (edges, textures, shapes) transfer universally across all four crop types.
-- Inference can batch all four crops in a single forward pass, minimizing wall-clock latency.
-
-The per-ROI specialization is handled entirely at the head level (four independent MLP heads), which is sufficient given the structural simplicity of each classification task.
+Single backbone for both CNN ROIs (Eyes + Mouth). Keeps parameter count low, allows both crops to batch in one forward pass.
 
 ### Backbone Freezing Strategy
-
-During initial training, the backbone is frozen (`freeze_backbone=True`). Only the four classification heads are trained. This:
-
-- Reduces the effective trainable parameter count to ~4 × (576×128 + 128 + 128×N) ≈ 0.30–0.35M.
-- Prevents overfitting on small per-ROI datasets before sufficient labeled data exists.
-- Speeds up early training iterations significantly.
-
-Full fine-tuning (unfreezing the backbone) is deferred to a second training stage once head convergence is established.
+- Stage 1 (epochs 1–10): backbone frozen, head only, LR=1e-3
+- Stage 2 (epochs 11–25): last 2 backbone blocks unfrozen, differential LR (backbone=1e-4, head=1e-3), MixUp(α=0.4)
+- Early stopping: patience=5 on val loss
 
 ### Occlusion Passthrough
-
-If YOLO11 fails to detect an ROI (confidence < 0.5), the CNN step is skipped for that slot entirely. A `None` value is returned in its output position. Downstream ACAMF interprets `None` as a fully occluded stream and assigns it zero weight in the fusion step. This avoids propagating garbage activations from a zero-padded crop.
-
-### Serialization
-
-Checkpoints are saved and loaded via `safetensors` (not `torch.save`/`pickle`). This eliminates the arbitrary code execution risk associated with pickle-based deserialization (CWE-502). Use `.safetensors` as the file extension.
+If YOLO11n-pose fails to detect an ROI (confidence < 0.5), CNN is skipped. A zero vector is passed downstream; ACAMF assigns zero weight to that stream.
 
 ---
 
-## Knowledge Distillation (Planned)
-
-Once the MobileNetV3-Small model reaches convergence, a Knowledge Distillation pass will compress it further toward the ~0.42M parameter target:
-
-- **Teacher:** ResNet-50 or EfficientNet-B3, trained to convergence on the same ROI dataset.
-- **Student:** MobileNetV3-Small (current architecture).
-- **Loss:** Combined Cross-Entropy (hard labels) + KL Divergence (softened teacher logits, temperature T=4).
-- **Target:** Student matches teacher accuracy within 1–2% at 10× fewer parameters.
-
----
-
-## Phase C — ACAMF + BiLSTM Temporal Model
+## Phase C — ACAMF + BiGRU Temporal Model
 
 ### Overview
 
-Phase C consumes the per-frame softmax vectors from Phase B and outputs a continuous **Focus Score** in `[0.0, 1.0]`. Two components run in sequence: ACAMF fuses the four ROI streams into a single weighted feature vector; the BiLSTM reasons across time to produce the final scalar.
+Phase C consumes per-frame feature vectors from Phase B (CNN softmax) and Phase A (keypoint geometry), then outputs a continuous **Focus Score** in `[0.0, 1.0]`.
+
+---
+
+### Per-Frame Feature Vector
+
+```
+frame_vec = [p_eyes_closed | p_mouth_open | head_pitch | head_yaw | head_roll | slouch_ratio | lean_angle | eyes_conf | mouth_conf | head_conf | torso_conf]
+             ─── 2 dims ──   ─── 2 dims ──  ────────────── 5 geometric dims ──────────────   ────────── 4 conf dims ──────────
+             total: 13-dim vector per frame
+```
+
+If a CNN ROI is occluded, its prob slots are zeroed and confidence set to 0.0. If pose keypoints are absent, geometric dims are zeroed.
 
 ---
 
 ### ACAMF — Adaptive Confidence-Aware Multimodal Fusion
 
-ACAMF down-weights ROI streams that are unreliable in a given window before they enter the BiLSTM. Reliability is derived from YOLO11 detection confidence, not from the CNN output itself.
-
-**Per-frame feature vector construction:**
-
-Each frame produces a concatenated vector of softmax probs + YOLO confidence scores:
-
-```
-frame_vec = [eyes_probs(4) | mouth_probs(4) | head_probs(6) | torso_probs(6) | eyes_conf | mouth_conf | head_conf | torso_conf]
-            ──────────────────────────── 20 dims ─────────────────────────── ──────────── 4 dims ────────────
-            total: 24-dim vector per frame
-```
-
-If an ROI is occluded (Phase B returns `None`), its prob slots are filled with zeros and its confidence score is set to 0.0.
-
-**Occlusion ratio weighting:**
-
-For each window of `T` frames, per-ROI occlusion ratio is computed:
+For each window of `T` frames:
 
 ```
 occlusion_ratio[roi] = frames_where_conf < 0.5 / T
 stream_weight[roi]   = 1 - occlusion_ratio[roi]
 ```
 
-Each ROI's contribution is scaled by its `stream_weight` before the BiLSTM receives it. Streams absent for the entire window contribute zero signal without corrupting the sequence.
+Each ROI's contribution is scaled by its `stream_weight` before BiGRU ingestion. Streams absent for the entire window contribute zero without corrupting the sequence.
 
 ---
 
 ### Temporal Windowing
 
-Frames are organized into overlapping 2D matrices before BiLSTM ingestion.
-
 | Parameter | Value |
 |-----------|-------|
-| Short window | 250ms – 1,000ms (7–30 frames @ 30 FPS) |
-| Moderate window | 2,000ms – 5,000ms (60–150 frames @ 30 FPS) |
+| Short window | 250ms – 1,000ms (~4–15 frames @ 15fps) |
+| Moderate window | 2,000ms – 5,000ms (~30–75 frames @ 15fps) |
 | Window overlap | 30–50% |
-| Matrix shape | `(T, 24)` — sequence length × feature dim |
+| Matrix shape | `(T, 13)` |
 
-Both window scales run concurrently. Short windows catch transient events (microsleep, sudden head drop); moderate windows catch sustained trends (yawn frequency, postural slump).
+Short windows: microsleeps, sudden head drops. Moderate windows: PERCLOS, yawn frequency, postural slump trends.
+
+**PERCLOS** = % frames in window where `p_eyes_closed > 0.5` — primary fatigue indicator.
 
 ---
 
-### BiLSTM Architecture
+### BiGRU Architecture
+
+**Why BiGRU over BiLSTM:** Comparable accuracy on short sequences (15–75 frames), ~30% fewer parameters, faster inference. GRU fuses forget/input gates → fewer ops per step.
 
 ```mermaid
 flowchart TD
-    A["ACAMF weighted feature matrix\n(T × 24)"] --> B
+    A["ACAMF weighted feature matrix\n(T × 13)"] --> B
 
-    subgraph B["BiLSTM Stack"]
-        B1["BiLSTM Layer 1\n128 units/direction → 256 total\nDropout 0.3"]
-        B2["BiLSTM Layer 2\n128 units/direction → 256 total\nDropout 0.3"]
+    subgraph B["BiGRU Stack"]
+        B1["BiGRU Layer 1\n64 units/direction → 128 total\nDropout 0.3"]
+        B2["BiGRU Layer 2\n64 units/direction → 128 total\nDropout 0.3"]
         B1 --> B2
     end
 
-    B --> C["Final hidden state\n(256-dim)"]
-    C --> D["FC Regression Head\nLinear 256→1\nSigmoid"]
+    B --> C["Final hidden state\n(128-dim)"]
+    C --> D["FC Regression Head\nLinear 128→1\nSigmoid"]
     D --> E["Focus Score\n0.0 = fatigued · 1.0 = alert"]
     E --> F["EMA Smoothing\n→ GUI / alert threshold"]
 ```
 
 | Component | Detail |
 |-----------|--------|
-| Layers | 2 stacked BiLSTM |
-| Hidden size | 128 per direction (256 total per layer) |
+| Layers | 2 stacked BiGRU |
+| Hidden size | 64 per direction (128 total per layer) |
 | Dropout | 0.3 between layers |
 | Output | Scalar regression via FC + Sigmoid |
 | Loss | MSE against annotated Focus Score labels |
 | Optimizer | Adam, lr=1e-3, ReduceLROnPlateau decay |
-| Sequence augmentation | ±1–2 frame temporal jitter during training |
+| Augmentation | ±1–2 frame temporal jitter during training |
 
----
-
-### Design Decisions
-
-**Why BiLSTM over unidirectional LSTM?**
-Bidirectional context within each window improves detection of transitional events (e.g., eyes closing then reopening) that are ambiguous from the forward pass alone. Inference runs over a fixed window, so future frames are always available — no causal constraint applies.
-
-**Why regression over classification?**
-A continuous Focus Score gives the GUI and alert system fine-grained control over thresholds. Binary fatigue/alert classification would discard gradient signal across the intermediate spectrum where early intervention is most valuable.
-
-**Jitter reduction via temporal smoothing:**
-Raw BiLSTM output exhibits frame-to-frame jitter (σ ≈ 0.042). An EMA with α=0.15 reduces this to σ ≈ 0.011 before the score reaches the GUI, preventing spurious alert triggers.
+**Why regression over classification:** Continuous Focus Score gives fine-grained threshold control. Binary fatigue/alert discards gradient signal across the early-onset spectrum where intervention is most valuable.
 
 ---
 
@@ -203,5 +182,7 @@ Raw BiLSTM output exhibits frame-to-frame jitter (σ ≈ 0.042). An EMA with α=
 
 | File | Purpose |
 |------|---------|
-| `src/models/multi_head_cnn.py` | `MultiHeadCNN` class + `_ClassHead`, `ROI_CONFIG`, class label constants |
-| `src/models/model_utils.py` | `build_model`, `save_model`, `load_model`, sanity-check `__main__` |
+| `src/models/binary_roi_classifier.py` | `BinaryROIClassifier` — MobileNetV3-Small + 2-class head |
+| `src/train_binary_classifier.py` | 2-stage training (frozen → partial unfreeze + MixUp) |
+| `src/dataset/eyes_dataset.py` | EyesDataset + build_dataloaders |
+| `scripts/label_eyes.py` | Pseudo-label raw crops using trained classifier |

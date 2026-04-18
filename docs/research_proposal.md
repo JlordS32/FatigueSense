@@ -11,41 +11,56 @@ Mental fatigue—a biological state resulting from prolonged cognitive load or s
 ---
 
 ## 2. Research Objectives
-1.  **Lightweight Pipeline:** Develop a multi-modal system capable of real-time spatial and temporal inference.
-2.  **Probabilistic Modeling:** Move beyond discrete $argmax$ classification to a fusion approach that captures the "gradual transition" of fatigue.
-3.  **Edge Optimization:** Achieve high inference stability on resource-constrained hardware using Knowledge Distillation (aiming for $\approx 0.42M$ parameters).
+1. **Lightweight Pipeline:** Develop a multi-modal system capable of real-time spatial and temporal inference on average laptop CPU hardware.
+2. **Probabilistic Modeling:** Move beyond discrete $argmax$ classification to a fusion approach that captures the "gradual transition" of fatigue.
+3. **Edge Optimization:** Achieve real-time inference (RTF < 1) without GPU, targeting 15fps via frame skipping on standard laptops.
 
 ---
 
 ## 3. Proposed Methodology and Architecture
 
-The system is structured into a three-level hierarchy:
+The system is structured into a three-phase pipeline:
 
 ### Phase A: Spatial Perception and Structural Extraction
-* **Localization:** Employs **YOLO11** for high-speed identification of four key Regions of Interest (ROI): Eyes, Mouth, Head, and Torso.
-* **Classification:** ROIs are processed by lightweight CNNs (MobileNetV3/GhostNet) to generate state probabilities.
-* **Knowledge Distillation:** A Teacher-Student strategy compresses high-performance models into efficient "student" networks for edge deployment.
 
-### Phase B: Temporal Feature Engineering
-The system stacks frame-level Softmax vectors into 2D matrices (Sequence Length $\times$ Features) using sliding windows:
-* **Short Windows (250ms–1,000ms):** Captures micro-sleeps and blink patterns.
-* **Moderate Windows (2,000ms–5,000ms):** Monitors head-nodding, yawning, and postural slumping.
-* **Key Metrics:** PERCLOS (Percentage of Eye Closure), MAR (Mouth Aspect Ratio), and postural asymmetry.
+* **Model:** **YOLO11n-pose** (nano pose variant) — single forward pass produces both bounding boxes and 17 COCO keypoints per detected person.
+* **Eyes + Mouth:** Bounding box crops fed into binary CNN classifiers (Phase B).
+* **Head:** 5 face keypoints fed into a `HeadPoseExtractor` — computes pitch, yaw, and roll via Perspective-n-Point (PnP) solver. No CNN required.
+* **Torso:** Shoulder and hip keypoints fed into a `TorsoPostureExtractor` — computes slouch ratio and lean angle geometrically. No CNN required.
+* **Frame rate:** 15fps processing (every 2nd frame at 30fps source) to meet CPU real-time budget.
+
+### Phase B: CNN Binary Classification (Eyes + Mouth only)
+
+Lightweight **MobileNetV3-Small** classifiers (shared backbone, two independent heads) classify Eye and Mouth crops:
+
+| ROI | Classes |
+|-----|---------|
+| Eyes | `eyes_closed`, `eyes_open` |
+| Mouth | `mouth_open` (yawn), `mouth_closed` |
+
+Binary classification per frame. Temporal patterns (blink rate, yawn frequency, PERCLOS) are computed downstream by the BiGRU, not inferred from single frames.
 
 ### Phase C: Temporal Modeling and Adaptive Fusion
-* **BiLSTM Decision Head:** A Bidirectional LSTM performs temporal reasoning, reducing frame-level jitter from $0.042$ to $0.011$.
-* **ACAMF Fusion:** The **Adaptive Confidence-Aware Multimodal Fusion** calculates occlusion ratios to dynamically down-weight noisy inputs (e.g., glasses glare).
+
+Per-frame feature vectors (CNN softmax + keypoint geometry + YOLO confidence scores) are organized into sliding windows and processed by the temporal model:
+
+* **ACAMF Fusion:** The **Adaptive Confidence-Aware Multimodal Fusion** module computes per-ROI occlusion ratios and dynamically down-weights unreliable streams before temporal modeling.
+* **BiGRU Decision Head:** A Bidirectional GRU (lighter than BiLSTM, comparable accuracy on short sequences) performs temporal reasoning across sliding windows, reducing frame-level jitter and capturing progressive fatigue onset.
+* **Key Metrics:** PERCLOS (% frames eyes_closed in window), yawn frequency, head pitch deviation, postural slump ratio.
+* **Output:** Continuous **Focus Score** ($0.0$ = severely fatigued, $1.0$ = fully alert).
 
 ---
 
 ## 4. Data Collection and Training
-* **Dataset:** Proprietary video recordings of participants in both natural and simulated fatigue states.
-* **Labeling:** Mapping frame ranges to a continuous **Focus Metric** ($0.0$ to $1.0$).
-* **Optimization:** Training via Adam optimizer using **Mean Squared Error (MSE)** loss for the regression task.
+
+* **Binary Classifiers (Eyes/Mouth):** Trained on public datasets (MRL+CEW for eyes, 4-class Drowsiness for mouth). Pseudo-labeling pipeline auto-labels raw FatigueSense video crops.
+* **Temporal Model:** Proprietary video recordings of participants in natural and simulated fatigue states. Frame sequences labeled with continuous Focus Score ($0.0$–$1.0$).
+* **Optimization:** Adam optimizer with MSE loss for the regression task.
 
 ---
 
 ## 5. Expected Outcomes
-* **Transparency Dashboard:** A GUI visualizing real-time focus metrics and behavioral triggers.
-* **Automated Notifications:** Personalized break recommendations based on individual fatigue thresholds.
-* **Performance:** Validated CPU-only real-time inference at **27–30 FPS**.
+
+* **Transparency Dashboard:** GUI visualizing real-time Focus Score and per-indicator breakdowns (PERCLOS, yawn count, head pose stability, posture deviation).
+* **Automated Notifications:** Personalized break recommendations triggered when Focus Score falls below threshold (default 0.40) for sustained duration.
+* **Performance:** Real-time CPU inference at 15fps (RTF < 1) on average laptop hardware. Total deployed model footprint ≤ 20MB.

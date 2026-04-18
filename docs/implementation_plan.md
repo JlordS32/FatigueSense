@@ -1,157 +1,305 @@
-# Implementation Plan for YOLO11 (Standard Detection)
+# FatigueSense — Implementation Plan
 
-## Phase 1: Spatial Localization and ROI Extraction
+## Architecture Overview
 
-The system leverages **YOLO11**, a backbone specifically designed for high-speed, real-time Vision AI tasks on low-power edge devices. Rather than relying on a skeletal mesh, the model is trained to detect and generate bounding boxes for four primary target classes: **Eyes, Mouth, Head, and Torso**.
+3-phase pipeline:
 
-### Detection Configuration
-* **Model Variant:** YOLO11n or YOLO11s (nano/small) selected based on latency profiling; target inference time ≤10ms per frame.
-* **Input Resolution:** 640×640 (standard YOLO input); ROI crops are subsequently resized to class-specific dimensions (e.g., 64×32 for eyes, 128×128 for head).
-* **Confidence Threshold:** Detections below 0.5 confidence are discarded. If a class is undetected (e.g., mouth occluded), its ROI slot is flagged as missing and handled downstream by ACAMF.
-* **Non-Maximum Suppression (NMS):** IoU threshold of 0.45 to suppress duplicate bounding boxes.
+1. **Phase A — Pose-Based Spatial Extraction:** YOLO11n-pose detects ROIs + extracts keypoints
+2. **Phase B — CNN Classification:** MobileNetV3-Small classifies Eyes and Mouth crops (binary)
+3. **Phase C — Temporal Modeling:** BiGRU across sliding windows → continuous Focus Score (0.0–1.0)
 
-### ROI Pre-Processing
-Each confirmed bounding box is cropped from the frame and normalized before CNN ingestion:
-* Resized to a fixed resolution per ROI class.
-* Pixel values normalized to `[0, 1]`.
-* A **padding strategy** is applied when the bounding box clips the frame boundary to avoid distorting spatial features.
+Target hardware: average laptop CPU. Target RTF < 1 (processing at 15fps via frame skipping).
 
-Because YOLO11 is optimized for edge efficiency, this stage produces clean ROI crops with minimal latency, facilitating a seamless **30 FPS pipeline**.
+### End-to-End Pipeline
 
----
+```mermaid
+flowchart TD
+    CAM["Camera\n30fps source"] -->|"every 2nd frame\n→ 15fps"| YOLO
 
-## Phase 2: Lightweight CNN Architecture Research
+    subgraph YOLO["Phase A — YOLO11n-pose"]
+        Y1["Person detection\n640×640 input"]
+        Y2["17 COCO keypoints\n+ bounding boxes"]
+        Y1 --> Y2
+    end
 
-Before committing to a backbone, a structured evaluation of candidate architectures is conducted to identify the optimal balance between accuracy, parameter count, and inference latency for each ROI stream.
+    Y2 -->|"Eye bbox crop"| CNN_E
+    Y2 -->|"Mouth bbox crop"| CNN_M
+    Y2 -->|"Face keypoints\n(nose, eyes, ears)"| HPE
+    Y2 -->|"Shoulder + hip\nkeypoints"| TPE
 
-### Candidate Architectures
-| Architecture      | Strengths                                                     | Weaknesses                                        |
-|-------------------|---------------------------------------------------------------|---------------------------------------------------|
-| MobileNetV3       | Depthwise separable convolutions; strong mobile track record  | Less expressive than full CNNs                    |
-| GhostNet          | "Ghost modules" generate redundant features cheaply           | Less community support / pretrained weights       |
-| EfficientNet-Lite | Strong accuracy/efficiency scaling via compound coefficient   | Slightly higher latency than MobileNet            |
-| ShuffleNetV2      | Channel shuffle for cross-group information flow; extremely low FLOPs | Accuracy ceiling lower than EfficientNet  |
+    subgraph PHASEB["Phase B — Feature Extraction"]
+        CNN_E["Eyes CNN\nMobileNetV3-Small\n→ p_eyes_closed"]
+        CNN_M["Mouth CNN\nMobileNetV3-Small\n→ p_mouth_open"]
+        HPE["HeadPoseExtractor\nPnP solver\n→ pitch, yaw, roll"]
+        TPE["TorsoPostureExtractor\nGeometry\n→ slouch ratio, lean angle"]
+    end
 
-### Evaluation Metrics
-Each candidate is benchmarked against a consistent set of criteria:
-* **Classification accuracy** on a held-out ROI validation set (per-class: eyes, mouth, head, torso).
-* **Inference latency** (ms/frame) on target CPU hardware.
-* **Parameter count** and **model size (MB)** post-training.
-* **FLOPs** per forward pass as a hardware-agnostic efficiency proxy.
+    CNN_E --> FV
+    CNN_M --> FV
+    HPE --> FV
+    TPE --> FV
 
-### Multimodal-Specific Evaluation
-Because each ROI has structurally distinct visual characteristics, the research must assess two competing strategies:
+    subgraph PHASEC["Phase C — Temporal Modeling"]
+        FV["Feature Vector\n(13-dim per frame)"]
+        WIN["Sliding Window\n(T × 13) matrix"]
+        ACAMF["ACAMF\nOptional occlusion weighting"]
+        GRU["BiGRU\n2 layers · 64 units/dir\n+ FC regression head"]
+        FV --> WIN --> ACAMF -->|"use_acamf: true"| GRU
+        WIN -->|"use_acamf: false\n(default)"| GRU
+    end
 
-* **Shared Backbone:** A single CNN processes all four ROIs. Lower total parameter count but may underfit fine-grained eye features.
-* **Per-ROI Specialized Heads:** Separate lightweight branches per ROI. Higher fidelity but increases model complexity — must still meet the **~0.42M parameter** target via Knowledge Distillation.
-
-### Knowledge Distillation Candidate Selection
-The selected architecture must be evaluated as a viable **student model** target. Key criteria:
-* Compressible to ~0.42M parameters without significant accuracy degradation.
-* Compatible with a Teacher-Student training strategy using a higher-capacity backbone (e.g., ResNet-50 or EfficientNet-B3) as the teacher.
-* Teacher model is trained first to convergence; student is then trained to minimize a combined loss of task loss (MSE/Cross-Entropy) and distillation loss (KL divergence on softened logits).
-
-### Phase Output
-A justified architecture selection and configuration (shared vs. per-ROI) that produces a **1D probability vector** per ROI — the required input format for Phase 4's temporal pipeline.
-
----
-
-## Phase 3: CNN-Based Feature Extraction
-
-Each ROI crop produced in Phase 1 is independently processed through the selected lightweight CNN backbone to extract behavioral state probabilities.
-
-### Per-ROI Output Structure
-The CNN outputs a **1D Softmax probability vector** for each ROI, representing the likelihood of discrete behavioral states:
-
-| ROI    | Output Classes (Example)                              |
-|--------|-------------------------------------------------------|
-| Eyes   | Open, Partially Closed, Closed, Microsleep            |
-| Mouth  | Neutral, Talking, Yawning                             |
-| Head   | Upright, Nodding, Tilted Left, Tilted Right           |
-| Torso  | Upright, Slumping, Asymmetric, Off-Task               |
-
-### Inference Batching
-To maximize hardware utilization, all four ROI crops are batched into a single forward pass where the shared backbone strategy is used. In the per-ROI head strategy, each branch is executed concurrently.
-
-### Occlusion Flagging
-If YOLO11 fails to detect an ROI in a given frame (confidence below threshold), the CNN step is skipped for that slot and a **null vector** (all zeros) is passed downstream. This signals ACAMF in Phase 5 to down-weight that stream accordingly.
-
-### Confidence Score Passthrough
-Alongside the Softmax vector, the **YOLO11 detection confidence score** for each ROI is preserved and passed to Phase 5 as part of the ACAMF weighting input.
+    GRU --> EMA["EMA Smoothing"]
+    EMA --> OUT["Focus Score\n0.0 fatigued → 1.0 alert"]
+    OUT --> GUI["GUI Dashboard\n+ Threshold Alerts"]
+```
 
 ---
 
-## Phase 4: Temporal Feature Engineering
+## Phase A: YOLO11n-Pose — Spatial Localization
 
-Frame-level probability vectors are organized into structured time windows for longitudinal behavioral analysis.
+**Why pose model over detection-only:**
+Head and torso behavioral states (pitch/yaw/roll, slouch ratio) are derivable from COCO keypoint geometry — no separate CNN needed for those ROIs. Single model pass provides both bounding boxes (for Eye/Mouth crops) and keypoints (for Head/Torso features).
 
-### Multi-Scale Windowing Strategy
-The system maintains two concurrent temporal window scales to capture behaviors at different time resolutions:
+### Configuration
+- **Model:** YOLO11n-pose (nano variant, ~6MB)
+- **Input Resolution:** 640×640
+- **Confidence Threshold:** 0.5 — detections below discarded; missing ROI flagged as occluded
+- **NMS IoU Threshold:** 0.45
+- **Frame Rate:** 15fps (process every 2nd frame at 30fps source) → ~66ms/frame budget
 
-* **Short Windows (250ms–1,000ms):** Target rapid, transient events. Captures microsleeps, individual blink patterns, and sudden head drops.
-* **Moderate Windows (2,000ms–5,000ms):** Target sustained, progressive states. Captures head nodding trends, yawn frequency, and postural slumping over time.
+### Outputs per Frame
 
-### 2D Matrix Construction
-Per-frame Softmax vectors are stacked row-by-row to form a **2D matrix** of shape `(Sequence Length × Feature Dimension)`, where:
-* **Sequence Length** is determined by the window scale and frame rate (e.g., at 30 FPS, a 1,000ms window = 30 rows).
-* **Feature Dimension** is the concatenated length of all four ROI Softmax vectors plus their associated YOLO11 confidence scores.
+```mermaid
+flowchart LR
+    YOLO["YOLO11n-pose\nforward pass"] --> BB["Bounding Boxes\n(Eyes, Mouth, Head, Torso)"]
+    YOLO --> KP["17 COCO Keypoints"]
 
-### Overlapping Windows
-A **30% to 50% overlap** is maintained between successive temporal buckets. This ensures behavioral transitions at window boundaries are not missed and provides the BiLSTM with smoother sequential context.
+    BB -->|"crop + preprocess"| EYES["Eye crop\n64×32"]
+    BB -->|"crop + preprocess"| MOUTH["Mouth crop\n64×32"]
 
-### Normalization
-Each column (feature dimension) of the 2D matrix is normalized using a **running min-max scaler** fitted on a calibration window at session start, accounting for per-user baseline variation.
+    KP -->|"keypoints 0–4\nnose, eyes, ears"| HEAD["Head region\n→ HeadPoseExtractor"]
+    KP -->|"keypoints 5,6,11,12\nshoulders, hips"| TORSO["Torso region\n→ TorsoPostureExtractor"]
+```
 
----
-
-## Phase 5: Temporal Modeling and Adaptive Fusion
-
-The 2D matrices from Phase 4 are consumed by the **Bidirectional LSTM (BiLSTM)** decision head, which performs temporal behavioral reasoning across both past and future context within each window.
-
-### BiLSTM Architecture
-* **Layers:** 2 stacked BiLSTM layers to capture hierarchical temporal patterns.
-* **Hidden Size:** 128 units per direction (256 total per layer).
-* **Dropout:** 0.3 applied between layers to reduce overfitting on sequential correlations.
-* **Output:** The final hidden state is passed to a fully connected regression head producing a scalar **Focus Score** in `[0.0, 1.0]`.
-
-### Stability and Jitter Reduction
-By analyzing behavioral trends across multiple frames rather than reacting to individual predictions, the temporal model reduces frame-level decision variation (jitter) from **0.042 to 0.011**, providing a smooth and trustworthy output signal.
-
-### ACAMF Integration
-**Adaptive Confidence-Aware Multimodal Fusion** is applied before the BiLSTM input to handle unreliable ROI streams:
-* An **occlusion ratio** is computed per ROI as the proportion of frames in the current window where the YOLO11 confidence fell below threshold.
-* Each ROI stream's contribution is scaled by `(1 - occlusion_ratio)` before concatenation, effectively down-weighting noisy or intermittently missing streams.
-* This allows the model to remain robust to transient occlusions (e.g., a hand in front of the mouth, glasses glare on the eyes) without discarding the entire window.
-
-### Training Configuration
-* **Loss Function:** Mean Squared Error (MSE) for the Focus Score regression task.
-* **Optimizer:** Adam with a learning rate of `1e-3`, decayed via ReduceLROnPlateau.
-* **Sequence Augmentation:** Random temporal jitter (±1–2 frames) applied during training to improve robustness to frame-rate inconsistencies.
+### ROI Pre-Processing (Eyes/Mouth crops)
+- Resize to fixed resolution per ROI: Eyes → 64×32, Mouth → 64×32
+- Grayscale → 3-channel (`Grayscale(num_output_channels=3)`)
+- Normalize with ImageNet mean/std `(0.485, 0.456, 0.406)` / `(0.229, 0.224, 0.225)`
+- Padding applied when bounding box clips frame boundary
 
 ---
 
-## Phase 6: Output and GUI Integration
+## Phase B: Feature Extraction
 
-The final phase converts the BiLSTM's continuous output into actionable, user-facing insights.
+### Eyes + Mouth — CNN (MobileNetV3-Small)
 
-### Focus Score Pipeline
-* **Regression Output:** The BiLSTM's fully connected head outputs a scalar Focus Score (`0.0` = severely fatigued, `1.0` = fully alert).
-* **Smoothing:** A lightweight **exponential moving average (EMA)** is applied to the raw score stream before display to prevent UI flickering from minor frame-to-frame variation.
+Selected for: depthwise separable convolutions, strong mobile track record, pretrained ImageNet weights.
 
-### GUI Dashboard Components
-* **Real-Time Focus Gauge:** Visual representation of the current smoothed Focus Score.
-* **Granular Metric Panel:** Per-indicator breakdowns displayed alongside the score — **PERCLOS**, **EAR trend**, **yawn frequency**, and **head pose stability** — to give the user transparency into what is driving their score.
-* **Session Timeline:** A scrollable historical graph of the Focus Score over the current session, allowing users to identify when and how fatigue onset occurred.
+```mermaid
+flowchart TD
+    CROP["ROI Crop\n(B, 3, H, W)"] --> BACKBONE
+    subgraph BACKBONE["MobileNetV3-Small (shared backbone)"]
+        B1["Depthwise Separable Conv\n+ SE Blocks + Hardswish"]
+        B2["AdaptiveAvgPool2d → Flatten\n(B, 576)"]
+        B1 --> B2
+    end
+    BACKBONE --> EH["Eyes Head\nLinear 576→128→2\n→ p_eyes_closed"]
+    BACKBONE --> MH["Mouth Head\nLinear 576→128→2\n→ p_mouth_open"]
+```
 
-### Threshold Notifications
-* A **personalized fatigue threshold** (default: Focus Score < 0.40) triggers an automated break recommendation.
-* Notification severity escalates with duration below threshold: a soft prompt at 1 minute, an intrusive alert at 3 minutes of sustained low focus.
+**Training strategy:**
+- Stage 1 (epochs 1–10): frozen backbone, head only, LR=1e-3
+- Stage 2 (epochs 11–25): unfreeze last 2 backbone blocks, differential LR (backbone=1e-4, head=1e-3), MixUp(α=0.4)
+- Early stopping: patience=5 on val loss
+
+**Binary classification per ROI:**
+
+| ROI | Positive (0) | Negative (1) | Decision |
+|-----|-------------|-------------|---------|
+| Eyes | `eyes_closed` | `eyes_open` | `p_pos > 0.5` |
+| Mouth | `mouth_open` | `mouth_closed` | `p_pos > 0.5` |
+
+**Why binary:** Fine-grained states (partially closed, talking vs yawning) are captured by temporal patterns downstream. Binary keeps noise ceiling manageable and training data requirements low.
+
+---
+
+### Head — HeadPoseExtractor (keypoint geometry)
+
+No CNN. Behavioral features derived geometrically from YOLO11n-pose face keypoints.
+
+```mermaid
+flowchart LR
+    KP["5 face keypoints\nnose · eyes · ears"] --> PNP["PnP Solver\nvs canonical 3D face model"]
+    PNP --> ANGLES["pitch\nyaw\nroll"]
+```
+
+| Feature | Fatigue signal |
+|---------|---------------|
+| Pitch | Head drooping forward (pitch < −15°) |
+| Yaw | Looking away from screen |
+| Roll | Lateral head tilt — postural instability |
+
+---
+
+### Torso — TorsoPostureExtractor (keypoint geometry)
+
+No CNN. Derived from shoulder and hip keypoints.
+
+```mermaid
+flowchart LR
+    KP["Shoulder + hip\nkeypoints"] --> GEOM["Geometric computation"]
+    GEOM --> SR["Slouch ratio\nvertical shoulder-hip distance\nvs session baseline"]
+    GEOM --> LA["Lean angle\nleft vs right shoulder height\nasymmetry"]
+```
+
+---
+
+## Phase C: Temporal Modeling
+
+Frame-level feature vectors organized into sliding windows for behavioral pattern detection.
+
+### Feature Vector per Frame (13-dim)
+
+```
+┌─────────────┬─────────────┬─────────────────────────────┬──────────────────────────────┐
+│  p_eyes_    │  p_mouth_   │   head_pitch  head_yaw       │  conf_eyes  conf_mouth        │
+│  closed     │  open       │   head_roll   slouch_ratio   │  conf_head  conf_torso        │
+│  (1 dim)    │  (1 dim)    │   lean_angle  (5 dims)       │  (4 dims)                     │
+└─────────────┴─────────────┴─────────────────────────────┴──────────────────────────────┘
+      CNN features (2)            Keypoint geometry (5)            YOLO confidence (4)
+                                    total: 13 dims
+```
+
+Zero-padded for any occluded/missing ROI slot.
+
+### Windowing Strategy
+
+```mermaid
+gantt
+    title Sliding Window Scales (example at 15fps)
+    dateFormat  x
+    axisFormat %Ls
+
+    section Short window
+    Window 1     :0, 1000
+    Window 2     :500, 1500
+    Window 3     :1000, 2000
+
+    section Moderate window
+    Window A     :0, 3000
+    Window B     :1500, 4500
+```
+
+| Window Scale | Duration | Frames @ 15fps | Target Events |
+|---|---|---|---|
+| Short | 250ms–1,000ms | 4–15 frames | Blinks, microsleeps, sudden head drops |
+| Moderate | 2,000ms–5,000ms | 30–75 frames | PERCLOS, yawn frequency, postural slump |
+
+- **Overlap:** 30–50% between successive windows
+- **PERCLOS:** % frames with `p_eyes_closed > 0.5` in window — primary fatigue indicator
+
+### Temporal Model: BiGRU
+
+**Why BiGRU over BiLSTM:** Comparable accuracy on short sequences, ~30% fewer parameters, faster inference. GRU fuses forget/input gates into single update gate — fewer ops per step.
+
+```mermaid
+flowchart TD
+    WIN["Sliding window matrix\n(T × 13)"] --> GRU1
+    subgraph BIGRU["BiGRU Stack"]
+        GRU1["BiGRU Layer 1\n64 units/direction → 128 total\nDropout 0.3"]
+        GRU2["BiGRU Layer 2\n64 units/direction → 128 total\nDropout 0.3"]
+        GRU1 --> GRU2
+    end
+    GRU2 --> HS["Final hidden state\n(128-dim)"]
+    HS --> FC["FC head\nLinear 128→1 · Sigmoid"]
+    FC --> FS["Focus Score  [0.0 – 1.0]"]
+```
+
+| Component | Detail |
+|-----------|--------|
+| Layers | 2 stacked BiGRU |
+| Hidden size | 64 per direction (128 total) |
+| Dropout | 0.3 between layers |
+| Loss | MSE (regression on Focus Score) |
+| Optimizer | Adam, LR=1e-3, ReduceLROnPlateau |
+| Augmentation | ±1–2 frame temporal jitter |
+
+### ACAMF — Optional Occlusion Module
+
+By default, features feed directly into the BiGRU. The BiGRU's gating implicitly learns to suppress noisy/zero-padded inputs given sufficient training examples with occlusion.
+
+```mermaid
+flowchart TD
+    WIN["Window matrix\n(T × 13)"]
+
+    WIN -->|"use_acamf: false\n(default)"| GRU["BiGRU"]
+
+    WIN -->|"use_acamf: true"| ACAMF
+    subgraph ACAMF["ACAMF Module"]
+        OR["Compute occlusion ratio\nper ROI stream"]
+        SW["stream_weight = 1 − occlusion_ratio"]
+        SC["Scale each ROI stream\nby its weight"]
+        OR --> SW --> SC
+    end
+    ACAMF --> GRU
+```
+
+Enable when:
+- Occlusion is frequent in deployment but underrepresented in training data
+- BiGRU shows degraded Focus Score stability during occluded frames
+
+**Default:** disabled. Toggle via `use_acamf: true` in config.
+
+---
+
+## Phase D: Output and GUI
+
+```mermaid
+flowchart LR
+    FS["Raw Focus Score"] --> EMA["EMA Smoothing\nα = 0.15"]
+    EMA --> GAUGE["Focus Gauge\nreal-time"]
+    EMA --> TIMELINE["Session Timeline\nscrollable history"]
+    EMA --> THRESH{Score < 0.40?}
+    THRESH -->|"sustained > 1 min"| SOFT["Soft break prompt"]
+    THRESH -->|"sustained > 3 min"| HARD["Intrusive alert"]
+
+    subgraph PANEL["Indicator Panel"]
+        P1["PERCLOS"]
+        P2["Yawn frequency"]
+        P3["Head pose stability"]
+        P4["Posture deviation"]
+    end
+    EMA --> PANEL
+```
 
 ### Performance Targets
-* End-to-end pipeline latency: **31ms–35ms per frame** (capture → YOLO11 → CNN → BiLSTM → GUI update).
-* Validated CPU-only real-time inference at **27–30 FPS**.
-* Total deployed model footprint: **≤14MB**.
+
+| Metric | Target |
+|---|---|
+| Processing rate | 15fps (every 2nd frame) |
+| RTF | < 1 (CPU viable) |
+| YOLO11n-pose latency | ~20–30ms/frame CPU |
+| CNN latency (Eyes + Mouth) | ~5–10ms combined |
+| BiGRU latency | < 5ms |
+| Total deployed footprint | ≤ 20MB |
 
 ---
 
-> **Summary of Benefits:** By utilizing standard YOLO11 for detection, the architecture benefits from a model already optimized for mobile hardware. This approach achieves state-of-the-art accuracy with significantly lower resource consumption than previous YOLO iterations.
+## Labeling Pipeline (Eyes)
+
+```mermaid
+flowchart TD
+    TR["training_data/data/train\n{Closed, Open}/"] --> TRAIN["Train BinaryROIClassifier\n2-stage frozen → partial unfreeze"]
+    TRAIN --> CKPT["runs/binary/eyes/best.pt"]
+    CKPT --> INF["scripts/label_eyes.py\ninference on datasets/Eyes/images/"]
+    INF --> THRESH{Confidence}
+    THRESH -->|"p_pos > 0.5"| CL["eyes_closed"]
+    THRESH -->|"p_neg > 0.5"| OP["eyes_open"]
+    THRESH -->|"neither"| SKIP["skip — ambiguous"]
+    CL --> OUT["datasets/Eyes/eyes_labels.txt\nstem  label  p_pos"]
+    OP --> OUT
+```
+
+---
+
+> **Design Principle:** Binary frame-level classification + temporal pattern detection separates concerns cleanly. The CNN answers "what is visible now" — the BiGRU answers "what behavioral pattern is emerging over time."

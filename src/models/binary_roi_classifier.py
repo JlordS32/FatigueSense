@@ -36,8 +36,7 @@ class BinaryROIClassifier(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d(1)
 
         if freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False
+            self.freeze_backbone(toggle=True)
 
         self.head = nn.Sequential(
             nn.Linear(self.BACKBONE_OUT_FEATURES, 128),
@@ -69,35 +68,3 @@ def build_binary_classifier(
 ) -> BinaryROIClassifier:
     """Construct a fresh BinaryROIClassifier."""
     return BinaryROIClassifier(pretrained=pretrained, freeze_backbone=freeze_backbone)
-
-
-# ---------------------------------------------------------------------------
-# Sanity check
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    from src.pipeline.threshold_predictor import ThresholdPredictor
-
-    size_map = {
-        "eyes": (1, 3, 32, 64),
-        "mouth": (1, 3, 64, 64),
-        "head": (1, 3, 128, 128),
-        "torso": (1, 3, 128, 128),
-    }
-
-    for roi, shape in size_map.items():
-        model = build_binary_classifier()
-        model.eval()
-
-        dummy = torch.randn(*shape)
-        with torch.no_grad():
-            logits = model(dummy)
-
-        predictor = ThresholdPredictor(roi)
-        labels, masks = predictor.predict(logits)
-
-        print(
-            f"{roi:6s} | logits={logits.squeeze().tolist()} "
-            f"| label={labels[0]} "
-            f"| intermediate_class={predictor.intermediate_class}"
-        )

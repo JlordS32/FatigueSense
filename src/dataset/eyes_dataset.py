@@ -19,6 +19,7 @@ _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 
 _TRAIN_TRANSFORMS = transforms.Compose([
+    transforms.Grayscale(num_output_channels=3),
     transforms.Resize((_EYES_INPUT_H, _EYES_INPUT_W)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(degrees=15),
@@ -28,24 +29,24 @@ _TRAIN_TRANSFORMS = transforms.Compose([
 ])
 
 _VAL_TRANSFORMS = transforms.Compose([
+    transforms.Grayscale(num_output_channels=3),
     transforms.Resize((_EYES_INPUT_H, _EYES_INPUT_W)),
     transforms.ToTensor(),
     transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
 ])
 
-_CLASS_TO_LABEL: dict[str, int] = {
-    "Closed_Eyes": 0,
-    "Open_Eyes": 1,
-}
-
-
 class EyesDataset(Dataset):
-    def __init__(self, root: str | Path, transform=None) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        class_to_label: dict[str, int],
+        transform=None,
+    ) -> None:
         self.transform = transform
         self.samples: list[tuple[Path, int]] = []
 
         root = Path(root)
-        for class_name, label in _CLASS_TO_LABEL.items():
+        for class_name, label in class_to_label.items():
             class_dir = root / class_name
             for img_path in sorted(class_dir.glob("*.png")):
                 self.samples.append((img_path, label))
@@ -63,6 +64,7 @@ class EyesDataset(Dataset):
 
 def build_dataloaders(
     root: str | Path,
+    class_to_label: dict[str, int],
     val_split: float = 0.15,
     batch_size: int = 64,
     num_workers: int = 4,
@@ -70,7 +72,7 @@ def build_dataloaders(
     import torch
 
     root = Path(root)
-    all_samples = EyesDataset(root, transform=None).samples
+    all_samples = EyesDataset(root, class_to_label, transform=None).samples
 
     total = len(all_samples)
     val_size = int(total * val_split)
@@ -79,8 +81,8 @@ def build_dataloaders(
     indices = torch.randperm(total).tolist()
     train_indices, val_indices = indices[:train_size], indices[train_size:]
 
-    train_dataset = EyesDataset(root, transform=_TRAIN_TRANSFORMS)
-    val_dataset = EyesDataset(root, transform=_VAL_TRANSFORMS)
+    train_dataset = EyesDataset(root, class_to_label, transform=_TRAIN_TRANSFORMS)
+    val_dataset = EyesDataset(root, class_to_label, transform=_VAL_TRANSFORMS)
 
     train_dataset.samples = [all_samples[i] for i in train_indices]
     val_dataset.samples = [all_samples[i] for i in val_indices]

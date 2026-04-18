@@ -1,21 +1,17 @@
 rois:
   eyes:
     num_classes: 4
-    input_size: [64, 32]   # W x H
+    input_size: [64, 32]
     classes:
       - eyes_open
-      - eyes_partially_closed
       - eyes_closed
-      - eyes_occluded
 
   mouth:
     num_classes: 4
     input_size: [64, 64]
     classes:
       - mouth_closed
-      - mouth_slight_open
-      - mouth_wide_open
-      - mouth_occluded
+      - mouth_open
 
   head:
     num_classes: 6
@@ -26,7 +22,6 @@ rois:
       - head_up
       - head_left
       - head_right
-      - head_occluded
 
   torso:
     num_classes: 6
@@ -37,4 +32,3 @@ rois:
       - torso_heavy_slouch
       - torso_lean_left
       - torso_lean_right
-      - torso_occluded

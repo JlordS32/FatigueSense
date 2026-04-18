@@ -39,7 +39,11 @@ MIXUP_ALPHA = 0.4
 EARLY_STOP_PATIENCE = 5
 
 DATASET_ROOTS: dict[str, str] = {
-    "eyes": "training_data/Eyes",
+    "eyes": "training_data/data/train",
+}
+
+CLASS_LABELS: dict[str, dict[str, int]] = {
+    "eyes": {"Closed": 0, "Open": 1},
 }
 
 CHECKPOINT_DIR = Path("runs/binary")
@@ -129,14 +133,18 @@ def run_stage(
     start_epoch: int,
     use_mixup: bool,
     checkpoint_path: Path,
-) -> int:
+) -> tuple[int, list[float], list[float], list[float]]:
     best_val_loss = float("inf")
     patience_counter = 0
     best_epoch = start_epoch
 
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+    val_f1s: list[float] = []
+
     for epoch in range(start_epoch, start_epoch + epochs):
         model.train()
-        running_lose = 0.0
+        running_loss = 0.0
 
         for images, labels in tqdm(train_loader, desc=f"Epoch {epoch}", leave=False):
             images, labels = images.to(device), labels.to(device)
@@ -156,8 +164,12 @@ def run_stage(
             optimizer.step()
             running_loss += loss.item() * images.size(0)
 
-        train_loss = running_lose / len(train_loader)
+        train_loss = running_loss / len(train_loader.dataset)
         val_loss, precision, recall, f1 = evaluate(model, val_loader, criterion, device)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        val_f1s.append(f1)
 
         print(
             f"Epoch {epoch:>3} | "
@@ -177,7 +189,53 @@ def run_stage(
                 print(f"Early stop at epoch {epoch} (best={best_epoch})")
                 break
 
-    return best_epoch
+    return best_epoch, train_losses, val_losses, val_f1s
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+
+def _plot_training(
+    train_losses: list[float],
+    val_losses: list[float],
+    val_f1s: list[float],
+    stage_boundary: int,
+    save_path: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    sns.set_theme(style="white", palette="Blues_r")
+
+    epochs = range(1, len(train_losses) + 1)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+    for ax in (ax1, ax2):
+        ax.axvline(stage_boundary + 0.5, color="#aaa", linestyle="--", linewidth=1, label="Stage 2 start")
+
+    ax1.plot(epochs, train_losses, label="Train loss")
+    ax1.plot(epochs, val_losses, label="Val loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Loss")
+    ax1.legend()
+    sns.despine(ax=ax1)
+
+    ax2.plot(epochs, val_f1s, label="Val F1")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("F1")
+    ax2.set_title("Validation F1")
+    ax2.set_ylim(0, 1)
+    ax2.legend()
+    sns.despine(ax=ax2)
+
+    plt.suptitle("Training Curves", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    print(f"Training curves saved to {save_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +254,7 @@ def train(roi: str) -> None:
 
     train_loader, val_loader = build_dataloaders(
         root=DATASET_ROOTS[roi],
+        class_to_label=CLASS_LABELS[roi],
         batch_size=BATCH_SIZE,
     )
     print(f"Train: {len(train_loader.dataset)} | Val: {len(val_loader.dataset)}")
@@ -213,7 +272,7 @@ def train(roi: str) -> None:
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=STAGE_1_LR,
     )
-    run_stage(
+    _, s1_train_losses, s1_val_losses, s1_val_f1s = run_stage(
         model,
         optimizer,
         criterion,
@@ -235,7 +294,7 @@ def train(roi: str) -> None:
             {"params": model.head.parameters(), "lr": STAGE_2_HEAD_LR},
         ]
     )
-    run_stage(
+    _, s2_train_losses, s2_val_losses, s2_val_f1s = run_stage(
         model,
         optimizer,
         criterion,
@@ -249,6 +308,14 @@ def train(roi: str) -> None:
     )
 
     print(f"\nBest checkpoint saved to {checkpoint_path}")
+
+    _plot_training(
+        s1_train_losses + s2_train_losses,
+        s1_val_losses + s2_val_losses,
+        s1_val_f1s + s2_val_f1s,
+        stage_boundary=len(s1_train_losses),
+        save_path=checkpoint_dir / "training_curves.png",
+    )
 
 
 if __name__ == "__main__":
