@@ -6,6 +6,10 @@
 
 # Folders
 /dataset_*
+/MRL_eye_dataset*
+/open_closed_eyes_dataset*
+/MF_Dataset_extracted*
+/MF_Dataset_cropped*
 /data
 /dataset*
 /split_data*
