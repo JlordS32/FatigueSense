@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
-import json
 import cv2
 
 from mediapipe_labelling import MediaPipeRegionExtractor
 
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 
 
@@ -16,12 +14,10 @@ def sanitize_stem(path: Path) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in path.stem)
 
 
-
 def save_crop(crop, output_path: Path) -> bool:
     if crop is None:
         return False
     return bool(cv2.imwrite(str(output_path), crop))
-
 
 
 def process_video_to_region_dataset(
@@ -32,37 +28,28 @@ def process_video_to_region_dataset(
     max_frames: Optional[int] = None,
     flip_horizontal: bool = False,
 ) -> dict[str, int]:
-    """Process a video and save cropped eyes/mouth images into class folders.
-
-    Output structure:
-        dataset/
-          eyes/
-            open/
-            closed/
-          mouth/
-            open/
-            closed/
-
-    Notes:
-    - Eye labels are taken from the extractor's frame-level eye state.
-    - Both left and right eye crops are saved into the same eyes/open or eyes/closed folder.
-    - Mouth labels are taken from the extractor's mouth state.
-    """
     video_path = Path(video_path)
     model_path = Path(model_path)
     output_root = Path(output_root)
-
-    output_root.mkdir(parents=True, exist_ok=True)
-
-    label_file_path = output_root / "labels.txt"
-    label_file = open(label_file_path, "a")
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
     if video_path.suffix.lower() not in VIDEO_EXTENSIONS:
         raise ValueError(f"Unsupported video extension: {video_path.suffix}")
 
-    extractor = MediaPipeRegionExtractor(model_path=model_path, draw_landmarks=False)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    eyes_open_dir = output_root / "eyes" / "open"
+    eyes_closed_dir = output_root / "eyes" / "closed"
+    mouth_open_dir = output_root / "mouth" / "open"
+    mouth_closed_dir = output_root / "mouth" / "closed"
+
+    eyes_open_dir.mkdir(parents=True, exist_ok=True)
+    eyes_closed_dir.mkdir(parents=True, exist_ok=True)
+    mouth_open_dir.mkdir(parents=True, exist_ok=True)
+    mouth_closed_dir.mkdir(parents=True, exist_ok=True)
+
+    extractor = MediaPipeRegionExtractor(model_path=model_path)
     cap = cv2.VideoCapture(str(video_path))
 
     if not cap.isOpened():
@@ -85,11 +72,10 @@ def process_video_to_region_dataset(
         "right_eye_saved": 0,
         "mouth_saved": 0,
         "skipped_no_face": 0,
+        "skipped_ambiguous_eye": 0,
+        "skipped_missing_crop": 0,
     }
 
-    frames_root = output_root / "frames"
-    frames_root.mkdir(parents=True, exist_ok=True)
-    
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -118,34 +104,53 @@ def process_video_to_region_dataset(
 
             stats["frames_detected"] += 1
 
-            ear_left = outputs.ear_left
-            ear_right = outputs.ear_right
+            # Skip ambiguous eye states
+            if outputs.left_eye_state is None or outputs.right_eye_state is None:
+                stats["skipped_ambiguous_eye"] += 1
+                frame_index += 1
+                if max_frames is not None and processed_frames >= max_frames:
+                    break
+                continue
 
-            left_eye_label = 1 if ear_left is not None and ear_left > 0.21 else 0
-            right_eye_label = 1 if ear_right is not None and ear_right > 0.21 else 0
-            mouth_label = (outputs.mouth_state or "unknown").lower()
+            # Skip if any crop is missing
+            if (
+                outputs.left_eye_crop is None
+                or outputs.right_eye_crop is None
+                or outputs.mouth_crop is None
+            ):
+                stats["skipped_missing_crop"] += 1
+                frame_index += 1
+                if max_frames is not None and processed_frames >= max_frames:
+                    break
+                continue
+
+            left_eye_label = 1 if outputs.left_eye_state == "OPEN" else 0
+            right_eye_label = 1 if outputs.right_eye_state == "OPEN" else 0
+
+            mouth_state = (outputs.mouth_state or "closed").lower()
+            mouth_label = 1 if mouth_state == "open" else 0
 
             stats["eyes_open"] += left_eye_label + right_eye_label
             stats["eyes_closed"] += (1 - left_eye_label) + (1 - right_eye_label)
 
-            if mouth_label not in {"open", "closed"}:
-                mouth_label = "closed"
-
-            if mouth_label == "open":
+            if mouth_label == 1:
                 stats["mouth_open"] += 1
             else:
                 stats["mouth_closed"] += 1
 
             sample_id = f"{video_stem}_f{frame_index:06d}"
 
-            
+            # Left eye
+            left_eye_dir = eyes_open_dir if left_eye_label == 1 else eyes_closed_dir
+            left_eye_path = left_eye_dir / f"{sample_id}_left.jpg"
 
-            sample_dir = frames_root / sample_id
-            sample_dir.mkdir(parents=True, exist_ok=True)
+            # Right eye
+            right_eye_dir = eyes_open_dir if right_eye_label == 1 else eyes_closed_dir
+            right_eye_path = right_eye_dir / f"{sample_id}_right.jpg"
 
-            left_eye_path = sample_dir / "left_eye.jpg"
-            right_eye_path = sample_dir / "right_eye.jpg"
-            mouth_path = sample_dir / "mouth.jpg"
+            # Mouth
+            mouth_dir = mouth_open_dir if mouth_label == 1 else mouth_closed_dir
+            mouth_path = mouth_dir / f"{sample_id}_mouth.jpg"
 
             if save_crop(outputs.left_eye_crop, left_eye_path):
                 stats["left_eye_saved"] += 1
@@ -154,19 +159,17 @@ def process_video_to_region_dataset(
             if save_crop(outputs.mouth_crop, mouth_path):
                 stats["mouth_saved"] += 1
 
-            mouth_val = int(mouth_label == "open")
-
-            label_file.write(f"{sample_id} {left_eye_label} {right_eye_label} {mouth_val}\n")
-
             frame_index += 1
 
             if max_frames is not None and processed_frames >= max_frames:
                 break
+
     finally:
         cap.release()
         extractor.close()
-        label_file.close()
+
     return stats
+
 
 def process_videos_in_directory(
     videos_dir: str | Path,
@@ -211,8 +214,6 @@ def process_videos_in_directory(
 
 
 if __name__ == "__main__":
-    # Example usage:
-    # python build_region_dataset.py
     MODEL_PATH = Path("mediapipe/models/face_landmarker.task")
     VIDEOS_DIR = Path("videos")
     OUTPUT_ROOT = Path("cropped_images")
