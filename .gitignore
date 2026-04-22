@@ -3,6 +3,7 @@
 *.mp4
 *.mp4
 *.pt
+labels.txt
 
 # Folders
 /dataset_*

@@ -14,8 +14,9 @@ LEFT_EYE = [33, 133, 160, 159, 158, 144, 145, 153]
 RIGHT_EYE = [362, 263, 387, 386, 385, 373, 374, 380]
 MOUTH = [61, 291, 81, 178, 13, 14, 402, 311, 308]
 
-EAR_OPEN_THRESH = 0.21
-EAR_CLOSE_THRESH = 0.19
+EAR_OPEN_THRESH = 0.23
+EAR_CLOSE_THRESH = 0.2
+
 MAR_OPEN_THRESH = 0.43
 MAR_CLOSE_THRESH = 0.40
 
@@ -31,6 +32,8 @@ class RegionOutputs:
     right_eye_box: tuple[int, int, int, int] | None
     mouth_box: tuple[int, int, int, int] | None
     ear: float | None
+    ear_left: float | None
+    ear_right: float | None
     mar: float | None
     eye_state: str | None
     mouth_state: str | None
@@ -53,8 +56,8 @@ class MediaPipeRegionExtractor:
         self,
         model_path: str | Path,
         num_faces: int = 1,
-        eye_crop_size: tuple[int, int] = (96, 96),
-        mouth_crop_size: tuple[int, int] = (128, 128),
+        eye_crop_size: tuple[int, int] = (64, 32),
+        mouth_crop_size: tuple[int, int] = (64, 32),
         draw_landmarks: bool = True,
     ) -> None:
         self.model_path = Path(model_path)
@@ -192,6 +195,8 @@ class MediaPipeRegionExtractor:
                 right_eye_box=None,
                 mouth_box=None,
                 ear=None,
+                ear_left=None,
+                ear_right=None,
                 mar=None,
                 eye_state=None,
                 mouth_state=None,
@@ -230,16 +235,20 @@ class MediaPipeRegionExtractor:
         eye_box_w = int(0.50 * eye_dist)
         eye_box_h = int(0.35 * eye_dist)
 
-        mar_clamped = max(0.3, min(mar, 1.2))
-        mouth_scale = 1.0 + 1.5 * (mar_clamped - 0.3)
+        # ---- mouth box sizing ----
+        mar_clamped = max(0.3, min(mar, 1.5))
+        mouth_scale = 1.0 + 4.0 * (mar_clamped - 0.3)
+
         mouth_box_w = int(1.0 * eye_dist)
-        mouth_box_h = int(0.65 * eye_dist * mouth_scale)
+        mouth_box_h = int(0.4 * eye_dist * mouth_scale)
 
         # Prevent mouth box from becoming too small
-        mouth_box_h = max(mouth_box_h, int(0.65 * eye_dist))
+        mouth_box_h = max(mouth_box_h, int(0.35 * eye_dist))
 
+        # Shift downward because mouth opens mostly downward
         cx, cy = mouth_center
         cy = int(cy + 0.05 * mouth_box_h)
+        mouth_center = (cx, cy)
 
         left_eye_crop, left_eye_box = self.crop_fixed_box(
             clean_frame, left_eye_center, eye_box_w, eye_box_h, self.eye_crop_size
@@ -284,6 +293,8 @@ class MediaPipeRegionExtractor:
             right_eye_box=right_eye_box,
             mouth_box=mouth_box,
             ear=ear,
+            ear_left=ear_left,
+            ear_right=ear_right,
             mar=mar,
             eye_state=self.eye_state,
             mouth_state=self.mouth_state,

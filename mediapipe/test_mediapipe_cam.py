@@ -14,8 +14,8 @@ LEFT_EYE = [33, 133, 160, 159, 158, 144, 145, 153]
 RIGHT_EYE = [362, 263, 387, 386, 385, 373, 374, 380]
 MOUTH = [61, 291, 81, 178, 13, 14, 402, 311, 308]
 
-EAR_OPEN_THRESH = 0.21
-EAR_CLOSE_THRESH = 0.19
+EAR_OPEN_THRESH = 0.23
+EAR_CLOSE_THRESH = 0.2
 
 MAR_OPEN_THRESH = 0.43
 MAR_CLOSE_THRESH = 0.40
@@ -221,15 +221,15 @@ def main():
                 eye_box_w = int(0.50 * eye_dist)
                 eye_box_h = int(0.35 * eye_dist)
 
-                # ---- Improved mouth box sizing ----
-                mar_clamped = max(0.3, min(mar, 1.2))
-                mouth_scale = 1.0 + 1.5 * (mar_clamped - 0.3)
+                # ---- mouth box sizing ----
+                mar_clamped = max(0.3, min(mar, 1.5))
+                mouth_scale = 1.0 + 4.0 * (mar_clamped - 0.3)
 
                 mouth_box_w = int(1.0 * eye_dist)
-                mouth_box_h = int(0.65 * eye_dist * mouth_scale)
+                mouth_box_h = int(0.4 * eye_dist * mouth_scale)
 
                 # Prevent mouth box from becoming too small
-                mouth_box_h = max(mouth_box_h, int(0.65 * eye_dist))
+                mouth_box_h = max(mouth_box_h, int(0.35 * eye_dist))
 
                 # Shift downward because mouth opens mostly downward
                 cx, cy = mouth_center
@@ -238,13 +238,13 @@ def main():
 
                 # ---- Crop from clean frame ----
                 left_eye_crop, left_eye_box = crop_fixed_box(
-                    clean_frame, left_eye_center, eye_box_w, eye_box_h, (32, 64)
+                    clean_frame, left_eye_center, eye_box_w, eye_box_h, (64, 32)
                 )
                 right_eye_crop, right_eye_box = crop_fixed_box(
-                    clean_frame, right_eye_center, eye_box_w, eye_box_h, (32, 64)
+                    clean_frame, right_eye_center, eye_box_w, eye_box_h, (64, 32)
                 )
                 mouth_crop, mouth_box = crop_fixed_box(
-                    clean_frame, mouth_center, mouth_box_w, mouth_box_h, (32, 64)
+                    clean_frame, mouth_center, mouth_box_w, mouth_box_h, (64, 32)
                 )
 
                 # ---- Draw boxes ----
