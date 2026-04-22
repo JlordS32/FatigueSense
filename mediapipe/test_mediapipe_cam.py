@@ -238,13 +238,13 @@ def main():
 
                 # ---- Crop from clean frame ----
                 left_eye_crop, left_eye_box = crop_fixed_box(
-                    clean_frame, left_eye_center, eye_box_w, eye_box_h, (96, 96)
+                    clean_frame, left_eye_center, eye_box_w, eye_box_h, (32, 64)
                 )
                 right_eye_crop, right_eye_box = crop_fixed_box(
-                    clean_frame, right_eye_center, eye_box_w, eye_box_h, (96, 96)
+                    clean_frame, right_eye_center, eye_box_w, eye_box_h, (32, 64)
                 )
                 mouth_crop, mouth_box = crop_fixed_box(
-                    clean_frame, mouth_center, mouth_box_w, mouth_box_h, (128, 128)
+                    clean_frame, mouth_center, mouth_box_w, mouth_box_h, (32, 64)
                 )
 
                 # ---- Draw boxes ----

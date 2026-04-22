@@ -5,7 +5,7 @@ from typing import Optional
 
 import cv2
 
-from mediapipe_region_extractor import MediaPipeRegionExtractor
+from mediapipe_labelling import MediaPipeRegionExtractor
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
