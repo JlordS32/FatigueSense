@@ -174,7 +174,7 @@ def process_video_to_region_dataset(
 def process_videos_in_directory(
     videos_dir: str | Path,
     model_path: str | Path,
-    output_root: str | Path = "cropped_images",
+    output_root: str | Path = "cropped_images_test",
     sample_every_n_frames: int = 1,
     max_frames: Optional[int] = None,
     flip_horizontal: bool = False,
@@ -215,8 +215,8 @@ def process_videos_in_directory(
 
 if __name__ == "__main__":
     MODEL_PATH = Path("mediapipe/models/face_landmarker.task")
-    VIDEOS_DIR = Path("videos")
-    OUTPUT_ROOT = Path("cropped_images")
+    VIDEOS_DIR = Path("vid")
+    OUTPUT_ROOT = Path("cropped_images_test")
 
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Missing model file: {MODEL_PATH}")

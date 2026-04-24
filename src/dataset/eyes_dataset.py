@@ -48,7 +48,7 @@ class EyesDataset(Dataset):
         root = Path(root)
         for class_name, label in class_to_label.items():
             class_dir = root / class_name
-            for img_path in sorted(class_dir.glob("*.png")):
+            for img_path in sorted(class_dir.glob("*.jpg")):
                 self.samples.append((img_path, label))
 
     def __len__(self) -> int:
