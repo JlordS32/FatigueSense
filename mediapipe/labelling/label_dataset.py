@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import cv2
+import csv
 
 from mediapipe_labelling import MediaPipeRegionExtractor
 
@@ -17,7 +18,14 @@ def sanitize_stem(path: Path) -> str:
 def save_crop(crop, output_path: Path) -> bool:
     if crop is None:
         return False
-    return bool(cv2.imwrite(str(output_path), crop))
+    
+    # Check if we are saving a PNG
+    if output_path.suffix.lower() == ".png":
+        # PNG Compression level 1 (fast, lossless)
+        return bool(cv2.imwrite(str(output_path), crop, [int(cv2.IMWRITE_PNG_COMPRESSION), 1]))
+    
+    # Fallback for JPEG
+    return bool(cv2.imwrite(str(output_path), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95]))
 
 
 def process_video_to_region_dataset(
@@ -31,6 +39,17 @@ def process_video_to_region_dataset(
     video_path = Path(video_path)
     model_path = Path(model_path)
     output_root = Path(output_root)
+
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    # Add this after output_root.mkdir
+    ear_log_path = output_root / "ear_log.csv"
+    ear_file = open(ear_log_path, "a", newline="")
+    ear_writer = csv.writer(ear_file)
+
+    # Write header only if file is empty
+    if ear_log_path.stat().st_size == 0:
+        ear_writer.writerow(["sample_id", "ear_left", "ear_right", "ear", "left_eye_state", "right_eye_state"])
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -140,17 +159,26 @@ def process_video_to_region_dataset(
 
             sample_id = f"{video_stem}_f{frame_index:06d}"
 
+            ear_writer.writerow([
+                sample_id,
+                f"{outputs.ear_left:.4f}",
+                f"{outputs.ear_right:.4f}",
+                f"{outputs.ear:.4f}",
+                outputs.left_eye_state,
+                outputs.right_eye_state,
+            ])
+
             # Left eye
             left_eye_dir = eyes_open_dir if left_eye_label == 1 else eyes_closed_dir
-            left_eye_path = left_eye_dir / f"{sample_id}_left.jpg"
+            left_eye_path = left_eye_dir / f"{sample_id}_left.png"
 
             # Right eye
             right_eye_dir = eyes_open_dir if right_eye_label == 1 else eyes_closed_dir
-            right_eye_path = right_eye_dir / f"{sample_id}_right.jpg"
+            right_eye_path = right_eye_dir / f"{sample_id}_right.png"
 
             # Mouth
             mouth_dir = mouth_open_dir if mouth_label == 1 else mouth_closed_dir
-            mouth_path = mouth_dir / f"{sample_id}_mouth.jpg"
+            mouth_path = mouth_dir / f"{sample_id}_mouth.png"
 
             if save_crop(outputs.left_eye_crop, left_eye_path):
                 stats["left_eye_saved"] += 1
@@ -167,6 +195,7 @@ def process_video_to_region_dataset(
     finally:
         cap.release()
         extractor.close()
+        ear_file.close()
 
     return stats
 
@@ -215,8 +244,8 @@ def process_videos_in_directory(
 
 if __name__ == "__main__":
     MODEL_PATH = Path("mediapipe/models/face_landmarker.task")
-    VIDEOS_DIR = Path("vid")
-    OUTPUT_ROOT = Path("cropped_images_test")
+    VIDEOS_DIR = Path("vids")
+    OUTPUT_ROOT = Path("dataset")
 
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Missing model file: {MODEL_PATH}")

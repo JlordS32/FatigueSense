@@ -10,15 +10,18 @@ import numpy as np
 from mediapipe.tasks.python import vision
 
 
-LEFT_EYE = [33, 133, 160, 159, 158, 144, 145, 153]
-RIGHT_EYE = [362, 263, 387, 386, 385, 373, 374, 380]
-MOUTH = [61, 291, 81, 178, 13, 14, 402, 311, 308]
+LEFT_EYE = [33,  133, 160, 144, 158, 153, 159, 145]
+RIGHT_EYE = [362, 263, 387, 373, 385, 380, 386, 374]
+MOUTH = [61, 291, 81, 178, 13, 14, 402, 311]
 
-EAR_OPEN_THRESH = 0.23
-EAR_CLOSE_THRESH = 0.21
+EAR_OPEN_THRESH = 0.26
+EAR_CLOSE_THRESH = 0.20
 
 MAR_OPEN_THRESH = 0.43
 MAR_CLOSE_THRESH = 0.40
+
+CROP_HEIGHT = 64
+CROP_WIDTH = 64
 
 
 @dataclass
@@ -42,8 +45,8 @@ class MediaPipeRegionExtractor:
         self,
         model_path: str | Path,
         num_faces: int = 1,
-        eye_crop_size: tuple[int, int] = (64, 32),
-        mouth_crop_size: tuple[int, int] = (64, 32),
+        eye_crop_size: tuple[int, int] = (CROP_WIDTH, CROP_HEIGHT),
+        mouth_crop_size: tuple[int, int] = (CROP_WIDTH, CROP_HEIGHT),
     ) -> None:
         self.model_path = Path(model_path)
         if not self.model_path.exists():
@@ -116,24 +119,47 @@ class MediaPipeRegionExtractor:
         return float(np.linalg.norm(np.array(p1) - np.array(p2)))
 
     @classmethod
-    def compute_ratio(
+    def compute_ear(
         cls, landmarks: list[Any], indices: list[int], w: int, h: int
     ) -> float:
-        pts: list[tuple[int, int]] = []
-        for idx in indices:
-            lm = landmarks[idx]
-            x = int(lm.x * w)
-            y = int(lm.y * h)
-            pts.append((x, y))
+        """
+        indices order: [outer, inner, top1, bot1, top2, bot2, top3, bot3]
+        Matches LEFT_EYE  = [33, 133, 160, 144, 158, 153, 159, 145]
+                RIGHT_EYE = [362, 263, 387, 373, 385, 380, 386, 374]
+        """
+        pts = [cls.landmark_to_pixel(landmarks[i], w, h) for i in indices]
 
-        a = cls.euclidean(pts[2], pts[6])
-        b = cls.euclidean(pts[3], pts[5])
-        c = cls.euclidean(pts[0], pts[1])
-
-        if c == 0:
+        # Horizontal distance
+        horizontal = cls.euclidean(pts[0], pts[1])
+        if horizontal == 0:
             return 0.0
 
-        return (a + b) / (2.0 * c)
+        # Three vertical distances for better coverage across the lid
+        v1 = cls.euclidean(pts[2], pts[3])
+        v2 = cls.euclidean(pts[4], pts[5])
+        v3 = cls.euclidean(pts[6], pts[7])
+
+        return (v1 + v2 + v3) / (3.0 * horizontal)
+    
+    @classmethod
+    def compute_mar(
+        cls, landmarks: list[Any], indices: list[int], w: int, h: int
+    ) -> float:
+        """
+        indices order: [left_corner, right_corner, top1, bot1, top2, bot2, top3, bot3]
+        Matches MOUTH = [61, 291, 81, 178, 13, 14, 402, 311]
+        """
+        pts = [cls.landmark_to_pixel(landmarks[i], w, h) for i in indices]
+
+        horizontal = cls.euclidean(pts[0], pts[1])
+        if horizontal == 0:
+            return 0.0
+
+        v1 = cls.euclidean(pts[2], pts[3])
+        v2 = cls.euclidean(pts[4], pts[5])
+        v3 = cls.euclidean(pts[6], pts[7])
+
+        return (v1 + v2 + v3) / (3.0 * horizontal)
 
     def close(self) -> None:
         if self.landmarker is not None:
@@ -169,10 +195,10 @@ class MediaPipeRegionExtractor:
         face = result.face_landmarks[0]
         h, w = frame.shape[:2]
 
-        ear_left = self.compute_ratio(face, LEFT_EYE, w, h)
-        ear_right = self.compute_ratio(face, RIGHT_EYE, w, h)
+        ear_left = self.compute_ear(face, LEFT_EYE, w, h)
+        ear_right = self.compute_ear(face, RIGHT_EYE, w, h)
         ear = (ear_left + ear_right) / 2.0
-        mar = self.compute_ratio(face, MOUTH, w, h)
+        mar = self.compute_mar(face, MOUTH, w, h)
 
         left_eye_state = None
         right_eye_state = None
