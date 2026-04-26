@@ -41,7 +41,7 @@ if __name__ == "__main__":
     model = build_model(pretrained=False)
 
     dummy = {
-        "eyes":  torch.randn(2, 3, 32, 64),
+        "eyes":  torch.randn(2, 3, 64, 64),
         "mouth": torch.randn(2, 3, 64, 64),
         "head":  torch.randn(2, 3, 128, 128),
         "torso": torch.randn(2, 3, 128, 128),
