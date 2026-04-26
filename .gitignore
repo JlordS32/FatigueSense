@@ -4,6 +4,7 @@
 *.mp4
 *.pt
 labels.txt
+*.png
 
 # Folders
 /dataset_*
@@ -11,10 +12,11 @@ labels.txt
 /open_closed_eyes_dataset*
 /MF_Dataset_extracted*
 /MF_Dataset_cropped*
+/diagrams*
+/runs*
 /data
 /dataset*
 /split_data*
-/runs
 __pycache__
 videos
 raw_data
