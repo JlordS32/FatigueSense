@@ -218,6 +218,11 @@ def process_videos_in_directory(
         [p for p in videos_dir.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS]
     )
 
+    print(f"\nFound {len(video_files)} video(s) to process:")
+    for i, vf in enumerate(video_files, 1):
+        print(f"  {i}. {vf.name}")
+    print()
+
     if not video_files:
         raise FileNotFoundError(f"No supported video files found in: {videos_dir}")
 
@@ -244,7 +249,7 @@ def process_videos_in_directory(
 
 if __name__ == "__main__":
     MODEL_PATH = Path("mediapipe/models/face_landmarker.task")
-    VIDEOS_DIR = Path("vids")
+    VIDEOS_DIR = Path("videos")
     OUTPUT_ROOT = Path("dataset")
 
     if not MODEL_PATH.exists():
