@@ -1,0 +1,19 @@
+ROI: MOUTH
+Checkpoint: runs\binary\mouth\best_model_oversampled.pt
+
+Accuracy : 0.9880
+ROC AUC  : 0.9856
+
+Classification Report:
+              precision    recall  f1-score   support
+
+      closed       1.00      0.99      0.99      2048
+        open       0.60      0.97      0.74        37
+
+    accuracy                           0.99      2085
+   macro avg       0.80      0.98      0.87      2085
+weighted avg       0.99      0.99      0.99      2085
+
+Confusion Matrix (['closed', 'open']):
+[[2024   24]
+ [   1   36]]

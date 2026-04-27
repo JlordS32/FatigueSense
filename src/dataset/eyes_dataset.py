@@ -37,6 +37,18 @@ _VAL_TRANSFORMS = transforms.Compose([
     transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
 ])
 
+_MINORITY_TRANSFORMS = transforms.Compose([
+    transforms.Grayscale(num_output_channels=3),
+    transforms.Resize((_EYES_INPUT_H, _EYES_INPUT_W)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(degrees=20),
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
+    transforms.ToTensor(),
+    transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+])
+
 
 class EyesDataset(Dataset):
     def __init__(
@@ -44,8 +56,12 @@ class EyesDataset(Dataset):
         root: str | Path,
         class_to_label: dict[str, int],
         transform=None,
+        minority_transform=None,
+        minority_label: int = 0,
     ) -> None:
         self.transform = transform
+        self.minority_transform = minority_transform
+        self.minority_label = minority_label
         self.samples: list[tuple[Path, int]] = []
 
         root = Path(root)
@@ -60,7 +76,9 @@ class EyesDataset(Dataset):
     def __getitem__(self, idx: int):
         img_path, label = self.samples[idx]
         image = Image.open(img_path).convert("RGB")
-        if self.transform:
+        if self.minority_transform and label == self.minority_label:
+            image = self.minority_transform(image)
+        elif self.transform:
             image = self.transform(image)
         return image, label
 
@@ -71,30 +89,11 @@ def build_dataloaders(
     val_split: float = 0.15,
     batch_size: int = 64,
     num_workers: int = 4,
-    sampler: WeightedRandomSampler | None = None,
-    downsample_majority: bool = False,
+    sampler = None,
 ) -> tuple[DataLoader, DataLoader]:
     import random
     root = Path(root)
     all_samples = EyesDataset(root, class_to_label, transform=None).samples
-
-    # --- Downsample majority to match minority count ---
-    if downsample_majority:
-        from collections import Counter
-        label_to_indices: dict[int, list[int]] = defaultdict(list)
-        for i, (_, label) in enumerate(all_samples):
-            label_to_indices[label].append(i)
-
-        min_count = min(len(idxs) for idxs in label_to_indices.values())
-        print(f"  Downsampling all classes to {min_count} samples")
-
-        balanced_indices = []
-        for label, idxs in label_to_indices.items():
-            random.seed(42)
-            sampled = random.sample(idxs, min_count)
-            balanced_indices.extend(sampled)
-
-        all_samples = [all_samples[i] for i in balanced_indices]
 
     # --- Stratified split ---
     label_to_indices: dict[int, list[int]] = defaultdict(list)
@@ -110,8 +109,15 @@ def build_dataloaders(
         val_indices.extend(idxs_tensor[:n_val])
         train_indices.extend(idxs_tensor[n_val:])
 
-    train_dataset = EyesDataset(root, class_to_label, transform=_TRAIN_TRANSFORMS)
-    val_dataset   = EyesDataset(root, class_to_label, transform=_VAL_TRANSFORMS)
+    train_dataset = EyesDataset(
+        root, class_to_label,
+        transform=_TRAIN_TRANSFORMS,
+        minority_transform=_MINORITY_TRANSFORMS,
+    )
+    val_dataset = EyesDataset(
+        root, class_to_label,
+        transform=_VAL_TRANSFORMS,
+    )
 
     train_dataset.samples = [all_samples[i] for i in train_indices]
     val_dataset.samples   = [all_samples[i] for i in val_indices]

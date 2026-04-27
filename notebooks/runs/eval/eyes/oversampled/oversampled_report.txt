@@ -1,0 +1,19 @@
+ROI: EYES
+Checkpoint: runs\binary\eyes\best.pt
+
+Accuracy : 0.9745
+ROC AUC  : 0.9849
+
+Classification Report:
+              precision    recall  f1-score   support
+
+      closed       0.85      0.90      0.87       405
+        open       0.99      0.98      0.99      3713
+
+    accuracy                           0.97      4118
+   macro avg       0.92      0.94      0.93      4118
+weighted avg       0.98      0.97      0.97      4118
+
+Confusion Matrix (['closed', 'open']):
+[[ 365   40]
+ [  65 3648]]
